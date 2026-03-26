@@ -82,6 +82,7 @@ CREATE TABLE Products (
     base_price   DECIMAL(12,2) NOT NULL,
     is_active    BIT           DEFAULT 1,
     created_at   DATETIME      DEFAULT GETDATE(),
+    CONSTRAINT CHK_product_base_price CHECK (base_price > 0),   -- [FIX] giá không được <= 0
     FOREIGN KEY (category_id) REFERENCES Categories(category_id),
     FOREIGN KEY (brand_id)    REFERENCES Brands(brand_id)
 );
@@ -95,6 +96,7 @@ CREATE TABLE ProductVariants (
     sku         VARCHAR(60)   NOT NULL UNIQUE,
     extra_price DECIMAL(12,2) DEFAULT 0,
     image_url   VARCHAR(255),
+    CONSTRAINT CHK_variant_extra_price CHECK (extra_price >= 0),  -- [FIX]
     FOREIGN KEY (product_id) REFERENCES Products(product_id)
 );
 
@@ -113,7 +115,9 @@ CREATE TABLE Inventory (
     quantity     INT DEFAULT 0,
     min_quantity INT DEFAULT 5,
     updated_at   DATETIME DEFAULT GETDATE(),
-    CONSTRAINT UQ_inv UNIQUE (variant_id, warehouse_id),
+    CONSTRAINT UQ_inv      UNIQUE (variant_id, warehouse_id),
+    CONSTRAINT CHK_inv_qty CHECK (quantity >= 0),        -- [FIX] không cho tồn kho âm tại INSERT
+    CONSTRAINT CHK_inv_min CHECK (min_quantity >= 0),    -- [FIX]
     FOREIGN KEY (variant_id)   REFERENCES ProductVariants(variant_id),
     FOREIGN KEY (warehouse_id) REFERENCES Warehouses(warehouse_id)
 );
@@ -149,6 +153,8 @@ CREATE TABLE StockReceiptItems (
     variant_id INT           NOT NULL,
     quantity   INT           NOT NULL,
     unit_cost  DECIMAL(12,2) NOT NULL,
+    CONSTRAINT CHK_sri_qty  CHECK (quantity > 0),      -- [FIX]
+    CONSTRAINT CHK_sri_cost CHECK (unit_cost > 0),     -- [FIX]
     FOREIGN KEY (receipt_id) REFERENCES StockReceipts(receipt_id),
     FOREIGN KEY (variant_id) REFERENCES ProductVariants(variant_id)
 );
@@ -168,15 +174,22 @@ CREATE TABLE Customers (
 
 -- 1.12 ORDERS
 CREATE TABLE Orders (
-    order_id         INT PRIMARY KEY IDENTITY(1,1),
-    customer_id      INT           NOT NULL,
-    created_by       INT           NOT NULL,
-    order_date       DATETIME      DEFAULT GETDATE(),
-    status           NVARCHAR(30)  DEFAULT 'pending',
-    shipping_address NVARCHAR(300),
-    discount_amount  DECIMAL(12,2) DEFAULT 0,
-    total_amount     DECIMAL(14,2) NOT NULL,
-    note             NVARCHAR(300),
+    order_id          INT PRIMARY KEY IDENTITY(1,1),
+    customer_id       INT           NOT NULL,
+    created_by        INT           NOT NULL,
+    order_date        DATETIME      DEFAULT GETDATE(),
+    status            NVARCHAR(30)  DEFAULT 'pending',
+    shipping_address  NVARCHAR(300),
+    discount_amount   DECIMAL(12,2) DEFAULT 0,
+    total_amount      DECIMAL(14,2) NOT NULL,
+    note              NVARCHAR(300),
+    -- [FIX] Cờ reserve stock: 1 = đã trừ kho lúc đặt hàng, 0 = chưa trừ
+    --       Dùng để tránh double-deduct khi trigger trg_DeductStockOnDelivered chạy
+    is_stock_reserved BIT           DEFAULT 0,
+    -- [FIX] Ràng buộc status — tránh bypass qua UPDATE trực tiếp
+    CONSTRAINT CHK_order_status   CHECK (status IN ('pending','confirmed','shipping','shipped','delivered','cancelled')),
+    CONSTRAINT CHK_order_total    CHECK (total_amount >= 0),
+    CONSTRAINT CHK_order_discount CHECK (discount_amount >= 0),
     FOREIGN KEY (customer_id) REFERENCES Customers(customer_id),
     FOREIGN KEY (created_by)  REFERENCES Users(user_id)
 );
@@ -187,6 +200,8 @@ CREATE TABLE OrderItems (
     variant_id INT           NOT NULL,
     quantity   INT           NOT NULL,
     unit_price DECIMAL(12,2) NOT NULL,
+    CONSTRAINT CHK_oi_qty   CHECK (quantity > 0),      -- [FIX]
+    CONSTRAINT CHK_oi_price CHECK (unit_price > 0),    -- [FIX]
     FOREIGN KEY (order_id)   REFERENCES Orders(order_id),
     FOREIGN KEY (variant_id) REFERENCES ProductVariants(variant_id)
 );
@@ -200,6 +215,8 @@ CREATE TABLE Payments (
     method          NVARCHAR(50),
     status          NVARCHAR(20)  DEFAULT 'completed',
     transaction_ref VARCHAR(100),
+    CONSTRAINT CHK_payment_amount CHECK (amount > 0),  -- [FIX]
+    CONSTRAINT CHK_payment_status CHECK (status IN ('pending','completed','failed','refunded')),  -- [FIX]
     FOREIGN KEY (order_id) REFERENCES Orders(order_id)
 );
 
@@ -781,19 +798,9 @@ GO
 -- =====================================================
 
 -- PROC 1: Tạo đơn hàng mới
-CREATE PROCEDURE sp_CreateOrder
-    @customer_id     INT,
-    @created_by      INT,
-    @shipping_address NVARCHAR(300),
-    @discount_amount DECIMAL(12,2) = 0,
-    @note            NVARCHAR(300) = NULL,
-    @new_order_id    INT OUTPUT
-AS BEGIN
-    SET NOCOUNT ON;
-    INSERT INTO Orders (customer_id, created_by, shipping_address, discount_amount, total_amount, note)
-    VALUES (@customer_id, @created_by, @shipping_address, @discount_amount, 0, @note);
-    SET @new_order_id = SCOPE_IDENTITY();
-END
+-- [FIX] Phiên bản đầy đủ với TRANSACTION được định nghĩa ở PATCH v3 bên dưới.
+--       Khai báo placeholder ở đây để đảm bảo thứ tự DROP/CREATE nhất quán.
+-- (Xem sp_CreateOrder đầy đủ tại PHẦN PATCH v3)
 GO
 
 -- PROC 2: Thêm sản phẩm vào đơn hàng & cập nhật total
@@ -831,31 +838,8 @@ END
 GO
 
 -- PROC 4: Nhập kho (tạo phiếu + cập nhật inventory)
-CREATE PROCEDURE sp_ReceiveStock
-    @supplier_id  INT,
-    @warehouse_id INT,
-    @created_by   INT,
-    @variant_id   INT,
-    @quantity     INT,
-    @unit_cost    DECIMAL(12,2),
-    @note         NVARCHAR(300) = NULL
-AS BEGIN
-    SET NOCOUNT ON;
-    DECLARE @receipt_id INT;
-    INSERT INTO StockReceipts (supplier_id, warehouse_id, created_by, total_amount, note)
-    VALUES (@supplier_id, @warehouse_id, @created_by, @quantity * @unit_cost, @note);
-    SET @receipt_id = SCOPE_IDENTITY();
-
-    INSERT INTO StockReceiptItems (receipt_id, variant_id, quantity, unit_cost)
-    VALUES (@receipt_id, @variant_id, @quantity, @unit_cost);
-
-    IF EXISTS (SELECT 1 FROM Inventory WHERE variant_id=@variant_id AND warehouse_id=@warehouse_id)
-        UPDATE Inventory SET quantity += @quantity, updated_at = GETDATE()
-        WHERE variant_id=@variant_id AND warehouse_id=@warehouse_id;
-    ELSE
-        INSERT INTO Inventory (variant_id, warehouse_id, quantity, min_quantity)
-        VALUES (@variant_id, @warehouse_id, @quantity, 5);
-END
+-- [FIX] Phiên bản đầy đủ với TRANSACTION được định nghĩa ở PATCH v3 bên dưới.
+-- (Xem sp_ReceiveStock đầy đủ tại PHẦN PATCH v3)
 GO
 
 -- PROC 5: Tìm kiếm sản phẩm theo tên / danh mục / thương hiệu
@@ -899,33 +883,9 @@ END
 GO
 
 -- PROC 7: Kiểm tra & cập nhật tồn kho (xuất kho khi giao hàng)
-CREATE PROCEDURE sp_DeductInventory
-    @order_id    INT,
-    @warehouse_id INT = 1
-AS BEGIN
-    SET NOCOUNT ON;
-    DECLARE @variant_id INT, @qty INT;
-    DECLARE cur CURSOR FOR
-        SELECT variant_id, quantity FROM OrderItems WHERE order_id = @order_id;
-    OPEN cur;
-    FETCH NEXT FROM cur INTO @variant_id, @qty;
-    WHILE @@FETCH_STATUS = 0
-    BEGIN
-        DECLARE @stock INT;
-        SELECT @stock = quantity FROM Inventory
-        WHERE variant_id = @variant_id AND warehouse_id = @warehouse_id;
-        IF @stock < @qty
-        BEGIN
-            CLOSE cur; DEALLOCATE cur;
-            RAISERROR(N'Không đủ tồn kho cho variant %d', 16, 1, @variant_id);
-            RETURN;
-        END
-        UPDATE Inventory SET quantity -= @qty, updated_at = GETDATE()
-        WHERE variant_id = @variant_id AND warehouse_id = @warehouse_id;
-        FETCH NEXT FROM cur INTO @variant_id, @qty;
-    END
-    CLOSE cur; DEALLOCATE cur;
-END
+-- [FIX] Phiên bản đầy đủ với TRANSACTION + set-based (không dùng CURSOR)
+--       được định nghĩa ở PATCH v3 bên dưới.
+-- (Xem sp_DeductInventory đầy đủ tại PHẦN PATCH v3)
 GO
 
 -- PROC 8: Cộng điểm loyalty cho khách hàng
@@ -1086,25 +1046,8 @@ GO
 -- =====================================================
 
 -- TRIGGER 1: Tự động trừ tồn kho khi đơn hàng được DELIVERED
-CREATE TRIGGER trg_DeductStockOnDelivered
-ON Orders AFTER UPDATE AS
-BEGIN
-    SET NOCOUNT ON;
-    IF NOT EXISTS (SELECT 1 FROM inserted WHERE status='delivered') RETURN;
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Orders','UPDATE', i.order_id,
-           N'Đơn hàng chuyển sang delivered, trừ kho'
-    FROM inserted i JOIN deleted d ON i.order_id = d.order_id
-    WHERE i.status = 'delivered' AND d.status <> 'delivered';
-
-    UPDATE inv SET inv.quantity -= oi.quantity, inv.updated_at = GETDATE()
-    FROM Inventory inv
-    JOIN OrderItems oi ON inv.variant_id = oi.variant_id
-    JOIN inserted i    ON oi.order_id    = i.order_id
-    JOIN deleted d     ON i.order_id     = d.order_id
-    WHERE i.status = 'delivered' AND d.status <> 'delivered'
-      AND inv.warehouse_id = 1;  -- mặc định kho 1
-END
+-- [FIX] Phiên bản có ROLLBACK + kiểm tra tồn kho được định nghĩa ở PATCH v3.
+-- (Xem trg_DeductStockOnDelivered đầy đủ tại PHẦN PATCH v3)
 GO
 
 -- TRIGGER 2: Cộng điểm loyalty khi đơn hàng delivered
@@ -1121,23 +1064,8 @@ END
 GO
 
 -- TRIGGER 3: Tăng tồn kho khi nhập phiếu nhập kho
-CREATE TRIGGER trg_UpdateStockOnReceipt
-ON StockReceiptItems AFTER INSERT AS
-BEGIN
-    SET NOCOUNT ON;
-    MERGE Inventory AS tgt
-    USING (
-        SELECT sri.variant_id, sr.warehouse_id, SUM(sri.quantity) AS qty
-        FROM inserted sri
-        JOIN StockReceipts sr ON sri.receipt_id = sr.receipt_id
-        GROUP BY sri.variant_id, sr.warehouse_id
-    ) AS src ON tgt.variant_id = src.variant_id AND tgt.warehouse_id = src.warehouse_id
-    WHEN MATCHED THEN
-        UPDATE SET tgt.quantity += src.qty, tgt.updated_at = GETDATE()
-    WHEN NOT MATCHED THEN
-        INSERT (variant_id, warehouse_id, quantity, min_quantity)
-        VALUES (src.variant_id, src.warehouse_id, src.qty, 5);
-END
+-- [FIX] Phiên bản có validation quantity > 0 + ROLLBACK được định nghĩa ở PATCH v3.
+-- (Xem trg_UpdateStockOnReceipt đầy đủ tại PHẦN PATCH v3)
 GO
 
 -- TRIGGER 4: Ghi log khi xóa sản phẩm
@@ -1153,22 +1081,8 @@ END
 GO
 
 -- TRIGGER 5: Ngăn xóa sản phẩm còn tồn kho > 0
-CREATE TRIGGER trg_PreventDeleteStockedProduct
-ON Products INSTEAD OF DELETE AS
-BEGIN
-    SET NOCOUNT ON;
-    IF EXISTS (
-        SELECT 1 FROM Inventory i
-        JOIN ProductVariants pv ON i.variant_id = pv.variant_id
-        JOIN deleted d          ON pv.product_id = d.product_id
-        WHERE i.quantity > 0
-    )
-    BEGIN
-        RAISERROR(N'Không thể xóa sản phẩm còn tồn kho!', 16, 1);
-        RETURN;
-    END
-    DELETE FROM Products WHERE product_id IN (SELECT product_id FROM deleted);
-END
+-- [FIX] Phiên bản có ROLLBACK + ghi AuditLog được định nghĩa ở PATCH v3.
+-- (Xem trg_PreventDeleteStockedProduct đầy đủ tại PHẦN PATCH v3)
 GO
 
 -- TRIGGER 6: Tự động cập nhật updated_at trong Inventory
@@ -1196,39 +1110,29 @@ END
 GO
 
 -- TRIGGER 8: Ngăn cập nhật đơn hàng đã CANCELLED
-CREATE TRIGGER trg_PreventUpdateCancelledOrder
-ON Orders INSTEAD OF UPDATE AS
-BEGIN
-    SET NOCOUNT ON;
-    IF EXISTS (SELECT 1 FROM deleted WHERE status = 'cancelled')
-    BEGIN
-        RAISERROR(N'Không thể cập nhật đơn hàng đã huỷ!', 16, 1);
-        RETURN;
-    END
-    UPDATE o SET
-        o.status           = i.status,
-        o.shipping_address = i.shipping_address,
-        o.discount_amount  = i.discount_amount,
-        o.total_amount     = i.total_amount,
-        o.note             = i.note
-    FROM Orders o JOIN inserted i ON o.order_id = i.order_id;
-END
+-- [FIX] Phiên bản có ROLLBACK được định nghĩa ở PATCH v3.
+-- (Xem trg_PreventUpdateCancelledOrder đầy đủ tại PHẦN PATCH v3)
 GO
 
 -- TRIGGER 9: Tự cập nhật total_amount đơn hàng khi sửa OrderItems
+-- [FIX] Xử lý đúng batch update (nhiều order_id cùng lúc) thay vì TOP 1
 CREATE TRIGGER trg_RecalcOrderTotal
 ON OrderItems AFTER INSERT, UPDATE, DELETE AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @oid INT;
-    SELECT @oid = ISNULL((SELECT TOP 1 order_id FROM inserted),
-                         (SELECT TOP 1 order_id FROM deleted));
-    IF @oid IS NOT NULL
-        UPDATE Orders
-        SET total_amount = ISNULL(
-            (SELECT SUM(quantity * unit_price) FROM OrderItems WHERE order_id = @oid), 0)
-            - discount_amount
-        WHERE order_id = @oid;
+    -- [FIX] Lấy tất cả order_id bị ảnh hưởng (không dùng TOP 1 để tránh bỏ sót)
+    ;WITH affected AS (
+        SELECT order_id FROM inserted
+        UNION
+        SELECT order_id FROM deleted
+    )
+    UPDATE o
+    SET o.total_amount = ISNULL(
+            (SELECT SUM(oi.quantity * oi.unit_price)
+             FROM OrderItems oi WHERE oi.order_id = o.order_id), 0)
+        - o.discount_amount
+    FROM Orders o
+    WHERE o.order_id IN (SELECT order_id FROM affected);
 END
 GO
 
@@ -1282,6 +1186,7 @@ GO
 
 -- ── TRIGGER 1 (nâng cấp): Trừ kho khi DELIVERED
 --    Thêm kiểm tra tồn kho không âm → ROLLBACK nếu vi phạm
+--    [FIX] Thêm kiểm tra is_stock_reserved để tránh double-deduct
 -- ─────────────────────────────────────────────────────
 DROP TRIGGER IF EXISTS trg_DeductStockOnDelivered;
 GO
@@ -1297,7 +1202,15 @@ BEGIN
         WHERE i.status = 'delivered' AND d.status <> 'delivered'
     ) RETURN;
 
-    -- Kiểm tra tồn kho TRƯỚC khi trừ
+    -- [FIX] Chỉ trừ kho nếu chưa reserve (is_stock_reserved = 0)
+    --       Tránh double-deduct khi sp_CreateOrder đã RESERVE trước
+    IF NOT EXISTS (
+        SELECT 1 FROM inserted i JOIN deleted d ON i.order_id = d.order_id
+        WHERE i.status = 'delivered' AND d.status <> 'delivered'
+          AND i.is_stock_reserved = 0
+    ) RETURN;   -- đã reserve rồi → không trừ nữa
+
+    -- Kiểm tra tồn kho TRƯỚC khi trừ (chỉ áp dụng cho đơn chưa reserve)
     IF EXISTS (
         SELECT 1
         FROM Inventory inv
@@ -1305,6 +1218,7 @@ BEGIN
         JOIN inserted   i  ON oi.order_id    = i.order_id
         JOIN deleted    d  ON i.order_id     = d.order_id
         WHERE i.status = 'delivered' AND d.status <> 'delivered'
+          AND i.is_stock_reserved = 0
           AND inv.warehouse_id = 1
           AND inv.quantity < oi.quantity   -- sẽ bị âm!
     )
@@ -1323,6 +1237,7 @@ BEGIN
     JOIN inserted   i  ON oi.order_id    = i.order_id
     JOIN deleted    d  ON i.order_id     = d.order_id
     WHERE i.status = 'delivered' AND d.status <> 'delivered'
+      AND i.is_stock_reserved = 0
       AND inv.warehouse_id = 1;
 
     -- Ghi audit log
@@ -1501,13 +1416,16 @@ BEGIN
             ) - @discount_amount
         WHERE order_id = @new_order_id;
 
-        -- Bước 5: Trừ tồn kho ngay (hoặc để trigger làm khi DELIVERED — tuỳ luồng)
-        -- Ở đây chọn: RESERVE stock khi tạo đơn (đặt hàng = giữ hàng)
+        -- Bước 5: Trừ tồn kho ngay (RESERVE stock khi tạo đơn = giữ hàng)
         UPDATE inv
         SET inv.quantity -= oi.quantity, inv.updated_at = GETDATE()
         FROM Inventory inv
         JOIN OrderItems oi ON inv.variant_id = oi.variant_id
         WHERE oi.order_id = @new_order_id AND inv.warehouse_id = 1;
+
+        -- [FIX] Đánh dấu đã reserve stock → trigger trg_DeductStockOnDelivered
+        --       sẽ bỏ qua đơn này, tránh double-deduct
+        UPDATE Orders SET is_stock_reserved = 1 WHERE order_id = @new_order_id;
 
         -- Bước 6: Ghi audit log
         INSERT INTO AuditLog (table_name, action, record_id, detail)
