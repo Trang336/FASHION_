@@ -797,11 +797,7 @@ GO
 -- PHẦN 4: 10 STORED PROCEDURES
 -- =====================================================
 
--- PROC 1: Tạo đơn hàng mới
--- [FIX] Phiên bản đầy đủ với TRANSACTION được định nghĩa ở PATCH v3 bên dưới.
---       Khai báo placeholder ở đây để đảm bảo thứ tự DROP/CREATE nhất quán.
--- (Xem sp_CreateOrder đầy đủ tại PHẦN PATCH v3)
-GO
+-- PROC 1: sp_CreateOrder → định nghĩa đầy đủ (XML + TRANSACTION) ở PATCH v3 bên dưới
 
 -- PROC 2: Thêm sản phẩm vào đơn hàng & cập nhật total
 CREATE PROCEDURE sp_AddOrderItem
@@ -837,10 +833,7 @@ AS BEGIN
 END
 GO
 
--- PROC 4: Nhập kho (tạo phiếu + cập nhật inventory)
--- [FIX] Phiên bản đầy đủ với TRANSACTION được định nghĩa ở PATCH v3 bên dưới.
--- (Xem sp_ReceiveStock đầy đủ tại PHẦN PATCH v3)
-GO
+-- PROC 4: sp_ReceiveStock → định nghĩa đầy đủ (TRANSACTION) ở PATCH v3 bên dưới
 
 -- PROC 5: Tìm kiếm sản phẩm theo tên / danh mục / thương hiệu
 CREATE PROCEDURE sp_SearchProducts
@@ -882,11 +875,7 @@ AS BEGIN
 END
 GO
 
--- PROC 7: Kiểm tra & cập nhật tồn kho (xuất kho khi giao hàng)
--- [FIX] Phiên bản đầy đủ với TRANSACTION + set-based (không dùng CURSOR)
---       được định nghĩa ở PATCH v3 bên dưới.
--- (Xem sp_DeductInventory đầy đủ tại PHẦN PATCH v3)
-GO
+-- PROC 7: sp_DeductInventory → định nghĩa đầy đủ (set-based + TRANSACTION) ở PATCH v3 bên dưới
 
 -- PROC 8: Cộng điểm loyalty cho khách hàng
 CREATE PROCEDURE sp_AddLoyaltyPoints
@@ -1045,10 +1034,7 @@ GO
 -- PHẦN 6: 10 TRIGGERS
 -- =====================================================
 
--- TRIGGER 1: Tự động trừ tồn kho khi đơn hàng được DELIVERED
--- [FIX] Phiên bản có ROLLBACK + kiểm tra tồn kho được định nghĩa ở PATCH v3.
--- (Xem trg_DeductStockOnDelivered đầy đủ tại PHẦN PATCH v3)
-GO
+-- TRIGGER 1: trg_DeductStockOnDelivered → định nghĩa đầy đủ ở PATCH v3 bên dưới
 
 -- TRIGGER 2: Cộng điểm loyalty khi đơn hàng delivered
 CREATE TRIGGER trg_AddLoyaltyOnDelivered
@@ -1063,10 +1049,7 @@ BEGIN
 END
 GO
 
--- TRIGGER 3: Tăng tồn kho khi nhập phiếu nhập kho
--- [FIX] Phiên bản có validation quantity > 0 + ROLLBACK được định nghĩa ở PATCH v3.
--- (Xem trg_UpdateStockOnReceipt đầy đủ tại PHẦN PATCH v3)
-GO
+-- TRIGGER 3: trg_UpdateStockOnReceipt → định nghĩa đầy đủ ở PATCH v3 bên dưới
 
 -- TRIGGER 4: Ghi log khi xóa sản phẩm
 CREATE TRIGGER trg_LogProductDelete
@@ -1080,10 +1063,7 @@ BEGIN
 END
 GO
 
--- TRIGGER 5: Ngăn xóa sản phẩm còn tồn kho > 0
--- [FIX] Phiên bản có ROLLBACK + ghi AuditLog được định nghĩa ở PATCH v3.
--- (Xem trg_PreventDeleteStockedProduct đầy đủ tại PHẦN PATCH v3)
-GO
+-- TRIGGER 5: trg_PreventDeleteStockedProduct → định nghĩa đầy đủ ở PATCH v3 bên dưới
 
 -- TRIGGER 6: Tự động cập nhật updated_at trong Inventory
 CREATE TRIGGER trg_InventoryUpdatedAt
@@ -1109,10 +1089,7 @@ BEGIN
 END
 GO
 
--- TRIGGER 8: Ngăn cập nhật đơn hàng đã CANCELLED
--- [FIX] Phiên bản có ROLLBACK được định nghĩa ở PATCH v3.
--- (Xem trg_PreventUpdateCancelledOrder đầy đủ tại PHẦN PATCH v3)
-GO
+-- TRIGGER 8: trg_PreventUpdateCancelledOrder → định nghĩa đầy đủ ở PATCH v3 bên dưới
 
 -- TRIGGER 9: Tự cập nhật total_amount đơn hàng khi sửa OrderItems
 -- [FIX] Xử lý đúng batch update (nhiều order_id cùng lúc) thay vì TOP 1
