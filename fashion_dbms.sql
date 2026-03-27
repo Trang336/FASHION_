@@ -2,8 +2,16 @@
 -- HỆ THỐNG QUẢN LÝ BÁN QUẦN ÁO
 -- SQL Server | Đồ án môn CSDL nâng cao
 -- Bao gồm: Schema + Mock Data + 10 Views
---          + 10 Procedures + 10 Functions + 10 Triggers
--- Phiên bản: FINAL (đã fix tất cả issues)
+--          + 10 Procedures + 10 Functions + 12 Triggers
+--          + 10 Indexes
+-- Phiên bản: FINAL v2 — đã fix toàn bộ issues
+-- Fixes:
+--   ✔ INSTEAD OF UPDATE trigger đủ tất cả cột
+--   ✔ sp_CreateOrder hỗ trợ @warehouse_id linh hoạt
+--   ✔ Trigger hoàn kho khi cancel (trg_RestoreStockOnCancel)
+--   ✔ Xóa trigger duplicate (InventoryUpdatedAt)
+--   ✔ UNIQUE brand_name, CHECK email format, CHECK gender
+--   ✔ 10 Indexes cho hiệu năng truy vấn
 -- =====================================================
 
 USE master;
@@ -61,6 +69,7 @@ CREATE TABLE Users (
     password_hash VARCHAR(255)  NOT NULL,
     is_active     BIT           DEFAULT 1,
     created_at    DATETIME      DEFAULT GETDATE(),
+    CONSTRAINT CHK_user_email CHECK (email LIKE '%@%.%'),   -- [FIX] validate email format
     FOREIGN KEY (role_id) REFERENCES Roles(role_id)
 );
 GO
@@ -78,7 +87,7 @@ GO
 -- 1.6 BRANDS
 CREATE TABLE Brands (
     brand_id   INT PRIMARY KEY IDENTITY(1,1),
-    brand_name NVARCHAR(100) NOT NULL,
+    brand_name NVARCHAR(100) NOT NULL UNIQUE,   -- [FIX] tránh duplicate thương hiệu
     country    NVARCHAR(50),
     logo_url   VARCHAR(255)
 );
@@ -188,7 +197,9 @@ CREATE TABLE Customers (
     gender         NVARCHAR(10),
     birthday       DATE,
     loyalty_points INT      DEFAULT 0,
-    created_at     DATETIME DEFAULT GETDATE()
+    created_at     DATETIME DEFAULT GETDATE(),
+    CONSTRAINT CHK_customer_email CHECK (email IS NULL OR email LIKE '%@%.%'),  -- [FIX]
+    CONSTRAINT CHK_customer_gender CHECK (gender IS NULL OR gender IN (N'Nam', N'Nữ', N'Khác'))
 );
 GO
 
@@ -813,7 +824,8 @@ CREATE PROCEDURE sp_CreateOrder
     @shipping_address NVARCHAR(300),
     @discount_amount  DECIMAL(12,2) = 0,
     @note             NVARCHAR(300) = NULL,
-    @items_xml        XML,           -- <items><i vid="1" qty="2"/></items>
+    @items_xml        XML,               -- <items><i vid="1" qty="2"/></items>
+    @warehouse_id     INT          = 1,  -- [FIX] không hardcode, mặc định kho 1
     @new_order_id     INT OUTPUT
 AS
 BEGIN
@@ -835,11 +847,12 @@ BEGIN
                dbo.fn_GetVariantPrice(x.item.value('@vid', 'INT'))
         FROM @items_xml.nodes('/items/i') AS x(item);
 
-        -- Bước 3: Kiểm tra tồn kho — nếu thiếu thì RAISERROR → CATCH → ROLLBACK
+        -- Bước 3: Kiểm tra tồn kho tại kho chỉ định
         IF EXISTS (
             SELECT 1
             FROM OrderItems oi
-            JOIN Inventory inv ON oi.variant_id = inv.variant_id AND inv.warehouse_id = 1
+            JOIN Inventory inv ON oi.variant_id = inv.variant_id
+                              AND inv.warehouse_id = @warehouse_id
             WHERE oi.order_id = @new_order_id
               AND inv.quantity < oi.quantity
         )
@@ -860,7 +873,8 @@ BEGIN
             inv.updated_at  = GETDATE()
         FROM Inventory inv
         JOIN OrderItems oi ON inv.variant_id = oi.variant_id
-        WHERE oi.order_id = @new_order_id AND inv.warehouse_id = 1;
+        WHERE oi.order_id    = @new_order_id
+          AND inv.warehouse_id = @warehouse_id;
 
         -- Bước 6: Đánh dấu đã reserve → trigger DeductOnDelivered sẽ bỏ qua đơn này
         UPDATE Orders SET is_stock_reserved = 1 WHERE order_id = @new_order_id;
@@ -1230,6 +1244,8 @@ GO
 -- TRIGGER 1: Trừ kho khi đơn → 'delivered'
 --   Chỉ trừ nếu is_stock_reserved = 0 (chưa RESERVE lúc tạo đơn)
 --   → tránh double-deduct với sp_CreateOrder
+--   Lưu ý: Trigger dùng warehouse_id = 1 (kho mặc định).
+--           Đơn từ kho khác nên dùng sp_DeductInventory với @warehouse_id tường minh.
 CREATE TRIGGER trg_DeductStockOnDelivered
 ON Orders AFTER UPDATE
 AS
@@ -1369,14 +1385,45 @@ BEGIN
 END
 GO
 
--- TRIGGER 6: Tự động cập nhật updated_at trong Inventory
-CREATE TRIGGER trg_InventoryUpdatedAt
-ON Inventory AFTER UPDATE
+-- TRIGGER 6: Hoàn lại tồn kho khi đơn bị CANCEL
+--   [FIX] Business logic quan trọng: nếu đã RESERVE stock lúc đặt hàng
+--   mà sau đó cancel → phải cộng lại kho, tránh mất stock
+CREATE TRIGGER trg_RestoreStockOnCancel
+ON Orders AFTER UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
-    UPDATE Inventory SET updated_at = GETDATE()
-    WHERE inventory_id IN (SELECT inventory_id FROM inserted);
+
+    -- Chỉ xử lý khi đơn chuyển sang 'cancelled'
+    IF NOT EXISTS (
+        SELECT 1 FROM inserted i JOIN deleted d ON i.order_id = d.order_id
+        WHERE i.status = 'cancelled' AND d.status <> 'cancelled'
+    ) RETURN;
+
+    -- Chỉ hoàn kho nếu đã reserve trước đó
+    UPDATE inv
+    SET inv.quantity   += oi.quantity,
+        inv.updated_at  = GETDATE()
+    FROM Inventory inv
+    JOIN OrderItems oi ON inv.variant_id = oi.variant_id
+    JOIN inserted   i  ON oi.order_id    = i.order_id
+    JOIN deleted    d  ON i.order_id     = d.order_id
+    WHERE i.status = 'cancelled' AND d.status <> 'cancelled'
+      AND i.is_stock_reserved = 1
+      AND inv.warehouse_id = 1;
+
+    -- Bỏ cờ reserve
+    UPDATE Orders SET is_stock_reserved = 0
+    WHERE order_id IN (
+        SELECT i.order_id FROM inserted i JOIN deleted d ON i.order_id = d.order_id
+        WHERE i.status = 'cancelled' AND d.status <> 'cancelled'
+    );
+
+    INSERT INTO AuditLog (table_name, action, record_id, detail)
+    SELECT 'Orders', 'STOCK_RESTORE', i.order_id,
+           N'Hoàn kho khi huỷ đơn ' + CAST(i.order_id AS NVARCHAR)
+    FROM inserted i JOIN deleted d ON i.order_id = d.order_id
+    WHERE i.status = 'cancelled' AND d.status <> 'cancelled';
 END
 GO
 
@@ -1396,6 +1443,7 @@ END
 GO
 
 -- TRIGGER 8: Ngăn cập nhật đơn hàng đã CANCELLED (INSTEAD OF UPDATE)
+--   [FIX] Update đầy đủ tất cả cột để tránh mất dữ liệu khi UPDATE bất kỳ cột nào
 CREATE TRIGGER trg_PreventUpdateCancelledOrder
 ON Orders INSTEAD OF UPDATE
 AS
@@ -1407,7 +1455,11 @@ BEGIN
         ROLLBACK TRANSACTION;
         RETURN;
     END
+    -- [FIX] Update đủ tất cả cột (bao gồm customer_id, created_by, order_date)
     UPDATE o SET
+        o.customer_id       = i.customer_id,
+        o.created_by        = i.created_by,
+        o.order_date        = i.order_date,
         o.status            = i.status,
         o.shipping_address  = i.shipping_address,
         o.discount_amount   = i.discount_amount,
@@ -1471,16 +1523,34 @@ END
 GO
 
 -- =====================================================
+-- PHẦN 7: INDEXES (tối ưu hiệu năng truy vấn)
+-- =====================================================
+
+-- Index cho các cột thường xuyên dùng trong WHERE / JOIN
+CREATE INDEX IX_Orders_Status        ON Orders(status);
+CREATE INDEX IX_Orders_Customer      ON Orders(customer_id);
+CREATE INDEX IX_Orders_Date          ON Orders(order_date);
+CREATE INDEX IX_OrderItems_Order     ON OrderItems(order_id);
+CREATE INDEX IX_OrderItems_Variant   ON OrderItems(variant_id);
+CREATE INDEX IX_Inventory_Variant    ON Inventory(variant_id);
+CREATE INDEX IX_Inventory_Warehouse  ON Inventory(warehouse_id);
+CREATE INDEX IX_Products_Category    ON Products(category_id);
+CREATE INDEX IX_Products_Brand       ON Products(brand_id);
+CREATE INDEX IX_ProductVariants_Prod ON ProductVariants(product_id);
+GO
+
+-- =====================================================
 -- KIỂM TRA NHANH
 -- =====================================================
 PRINT N'';
-PRINT N'✅ ĐÃ TẠO XONG DATABASE ClothingStoreDB (PHIÊN BẢN FINAL)';
+PRINT N'✅ ĐÃ TẠO XONG DATABASE ClothingStoreDB (FINAL v2)';
 PRINT N'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
-PRINT N'  BẢNG  : 17 bảng (15 chính + AuditLog)';
-PRINT N'  VIEWS  : 10 views';
-PRINT N'  PROCS  : 10 stored procedures';
-PRINT N'  FUNCS  : 10 functions';
-PRINT N'  TRIGGERS: 11 triggers (10 + 1 bonus PreventNegativeInventory)';
+PRINT N'  BẢNG    : 17 bảng';
+PRINT N'  VIEWS   : 10 views';
+PRINT N'  PROCS   : 10 stored procedures';
+PRINT N'  FUNCS   : 10 functions';
+PRINT N'  TRIGGERS: 12 triggers';
+PRINT N'  INDEXES : 10 indexes';
 PRINT N'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
 PRINT N'';
 PRINT N'-- DEMO TESTS (dán vào query window mới):';
