@@ -1,19 +1,10 @@
 -- =====================================================
 -- HỆ THỐNG QUẢN LÝ BÁN QUẦN ÁO
--- SQL Server | Đồ án môn CSDL nâng cao
+-- sử dụng SQL Server 
 -- Bao gồm: Schema + Mock Data + 10 Views
 -- + 10 Procedures + 10 Functions + 12 Triggers
 -- + 10 Indexes
--- Phiên bản: FINAL v3 — đã fix trigger hoàn kho
--- Fixes:
--- ✔ INSTEAD OF UPDATE trigger đủ tất cả cột
--- ✔ sp_CreateOrder hỗ trợ @warehouse_id linh hoạt
--- ✔ [FIX v3] trg_RestoreStockOnCancel: chỉ hoàn kho khi is_stock_reserved = 1
--- ✔ Xóa trigger duplicate (InventoryUpdatedAt)
--- ✔ UNIQUE brand_name, CHECK email format, CHECK gender
--- ✔ 10 Indexes cho hiệu năng truy vấn
--- ✔ sp_UpdateOrderStatus: guard không cho cancel đơn đã delivered
--- =====================================================
+-- Phiên bản: FINAL ròi huhu
 
 USE master;
 GO
@@ -29,10 +20,8 @@ GO
 USE ClothingStoreDB;
 GO
 
--- =====================================================
--- PHẦN 1: TẠO CẤU TRÚC BẢNG
--- =====================================================
 
+-- PHẦN 1: TẠO CẤU TRÚC BẢNG
 -- 1.1 ROLES
 CREATE TABLE Roles (
     role_id     INT PRIMARY KEY IDENTITY(1,1),
@@ -266,9 +255,7 @@ CREATE TABLE AuditLog (
 );
 GO
 
--- =====================================================
 -- PHẦN 2: INSERT DỮ LIỆU MẪU
--- =====================================================
 
 -- ROLES
 INSERT INTO Roles (role_name, description) VALUES
@@ -671,10 +658,8 @@ INSERT INTO Payments (order_id, payment_date, amount, method, status, transactio
 (30,'2024-09-25',890000, N'Thẻ',           'completed','CD20240925');
 GO
 
--- =====================================================
--- PHẦN 3: 10 VIEWS
--- =====================================================
 
+-- PHẦN 3: 10 VIEWS
 -- VIEW 1: Tồn kho theo biến thể & kho
 CREATE VIEW vw_InventoryByWarehouse AS
 SELECT p.product_id, p.product_name, b.brand_name, c.category_name,
@@ -814,10 +799,7 @@ LEFT JOIN StockReceiptItems sri ON sr.receipt_id  = sri.receipt_id
 GROUP BY s.supplier_id, s.supplier_name, s.contact_person;
 GO
 
--- =====================================================
 -- PHẦN 4: 10 FUNCTIONS
--- =====================================================
-
 -- FN 1: Giá biến thể
 CREATE FUNCTION dbo.fn_GetVariantPrice(@variant_id INT)
 RETURNS DECIMAL(12,2)
@@ -953,10 +935,8 @@ BEGIN
 END
 GO
 
--- =====================================================
--- PHẦN 5: 10 STORED PROCEDURES
--- =====================================================
 
+-- PHẦN 5: 10 STORED PROCEDURES
 -- PROC 1: Tạo đơn hàng (RESERVE model)
 CREATE PROCEDURE sp_CreateOrder
     @customer_id      INT,
@@ -1065,7 +1045,7 @@ BEGIN
         RETURN;
     END
 
-    -- [FIX] Guard: không cho cancel đơn đã delivered
+    -- Guard: không cho cancel đơn đã delivered
     IF @new_status = 'cancelled'
        AND EXISTS (
            SELECT 1 FROM Orders
@@ -1234,9 +1214,8 @@ BEGIN
 END
 GO
 
--- =====================================================
+
 -- PHẦN 6: 12 TRIGGERS
--- =====================================================
 
 -- TRIGGER 1: Cập nhật Inventory khi nhập kho
 CREATE TRIGGER trg_UpdateStockOnReceipt
@@ -1284,7 +1263,6 @@ END
 GO
 
 -- TRIGGER 3: Hoàn kho khi cancel
--- [FIX v3] Chỉ hoàn kho khi is_stock_reserved = 1
 -- Nếu đơn pending chưa reserve → bỏ qua, không cộng sai
 CREATE TRIGGER trg_RestoreStockOnCancel
 ON Orders
@@ -1293,7 +1271,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- ① Chỉ fire khi thực sự chuyển sang 'cancelled'
+    -- Chỉ fire khi thực sự chuyển sang 'cancelled'
     IF NOT EXISTS (
         SELECT 1
         FROM inserted i
@@ -1302,7 +1280,7 @@ BEGIN
           AND d.status <> 'cancelled'
     ) RETURN;
 
-    -- ② KEY FIX: chỉ hoàn kho nếu kho đã bị reserve trước đó
+    -- KEY: chỉ hoàn kho nếu kho đã bị reserve trước đó
     UPDATE inv
     SET inv.quantity   = inv.quantity + oi.quantity,
         inv.updated_at = GETDATE()
@@ -1310,16 +1288,16 @@ BEGIN
     JOIN OrderItems  oi ON inv.variant_id  = oi.variant_id
     JOIN inserted    i  ON oi.order_id     = i.order_id
     WHERE i.status            = 'cancelled'
-      AND i.is_stock_reserved = 1;  -- ← CHỈ HOÀN KHI ĐÃ RESERVE
+      AND i.is_stock_reserved = 1;  -- ← CHỈ HOÀN KHI ĐÃ RESERVE 
 
-    -- ③ Reset cờ reserve về 0
+    --  Reset cờ reserve về 0
     UPDATE o
     SET o.is_stock_reserved = 0
     FROM Orders   o
     JOIN inserted i ON o.order_id = i.order_id
     WHERE i.status = 'cancelled';
 
-    -- ④ Audit log rõ ràng
+    --  Audit log rõ ràng
     INSERT INTO AuditLog (table_name, action, record_id, detail)
     SELECT 'Orders', 'CANCEL', i.order_id,
            CASE i.is_stock_reserved
@@ -1479,9 +1457,7 @@ BEGIN
 END
 GO
 
--- =====================================================
 -- PHẦN 7: 10 INDEXES
--- =====================================================
 
 CREATE INDEX IX_Orders_CustomerId    ON Orders(customer_id);
 CREATE INDEX IX_Orders_Status        ON Orders(status);
@@ -1495,9 +1471,8 @@ CREATE INDEX IX_Products_BrandId     ON Products(brand_id);
 CREATE INDEX IX_ProductVariants_ProductId ON ProductVariants(product_id);
 GO
 
--- =====================================================
--- KIỂM TRA NHANH
--- =====================================================
+
+-- KIỂM TRA NHANh
 
 SELECT 'Schema OK' AS result;
 SELECT COUNT(*) AS total_products   FROM Products;
