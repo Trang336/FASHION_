@@ -1419,18 +1419,26 @@ BEGIN
         RETURN;
     END
 
-    -- Trừ đúng kho của từng đơn (chỉ đơn chưa reserve)
+    -- [FIX v5-1] Trừ kho theo aggregate — an toàn khi batch update nhiều orders cùng lúc
+    -- GROUP BY (variant_id, warehouse_id) tránh trừ sai do join nhân bản dòng
+    ;WITH deduct AS (
+        SELECT oi.variant_id,
+               i.warehouse_id,
+               SUM(oi.quantity) AS total_qty   -- gom toàn bộ quantity cùng variant+kho
+        FROM OrderItems oi
+        JOIN inserted i ON oi.order_id  = i.order_id
+        JOIN deleted  d ON i.order_id   = d.order_id
+        WHERE i.status            = 'delivered'
+          AND d.status            <> 'delivered'
+          AND i.is_stock_reserved = 0
+        GROUP BY oi.variant_id, i.warehouse_id
+    )
     UPDATE inv
-    SET inv.quantity   -= oi.quantity,
+    SET inv.quantity   -= d.total_qty,
         inv.updated_at  = GETDATE()
     FROM Inventory inv
-    JOIN OrderItems oi ON inv.variant_id   = oi.variant_id
-    JOIN inserted   i  ON oi.order_id      = i.order_id
-    JOIN deleted    d  ON i.order_id       = d.order_id
-    WHERE i.status             = 'delivered'
-      AND d.status             <> 'delivered'
-      AND i.is_stock_reserved  = 0          -- [FIX v4-1] HARD GATE
-      AND inv.warehouse_id     = i.warehouse_id;
+    JOIN deduct d ON inv.variant_id   = d.variant_id
+                 AND inv.warehouse_id  = d.warehouse_id;
 
     INSERT INTO AuditLog (table_name, action, record_id, detail)
     SELECT 'Orders', 'STOCK_DEDUCT', i.order_id,
@@ -1768,6 +1776,64 @@ BEGIN
 END
 GO
 
+-- TRIGGER 15: [FIX v5-3] Ngăn sửa/thêm/xoá OrderItems khi đơn đã reserve
+-- Sau khi reserve kho, sửa quantity/items sẽ làm lệch tồn kho thực tế
+CREATE TRIGGER trg_PreventModifyOrderItemsWhenReserved
+ON OrderItems AFTER INSERT, UPDATE, DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Gom tất cả order_id bị ảnh hưởng
+    DECLARE @affected_orders TABLE (order_id INT);
+    INSERT INTO @affected_orders
+        SELECT order_id FROM inserted
+        UNION
+        SELECT order_id FROM deleted;
+
+    -- Nếu bất kỳ đơn nào đã reserve → ROLLBACK
+    IF EXISTS (
+        SELECT 1 FROM Orders o
+        JOIN @affected_orders a ON o.order_id = a.order_id
+        WHERE o.is_stock_reserved = 1
+          AND o.status NOT IN ('cancelled', 'delivered')  -- đơn đang active & đã reserve
+    )
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RAISERROR(N'[TRIGGER] Không thể sửa/thêm/xoá sản phẩm trong đơn hàng đã giữ kho (reserved). Hãy huỷ đơn trước.', 16, 1);
+    END
+END
+GO
+
+-- TRIGGER 16: [FIX v5-4] Ngăn xoá đơn hàng đã có payment
+CREATE TRIGGER trg_PreventDeleteOrderWithPayment
+ON Orders INSTEAD OF DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Nếu đơn đang bị xoá đã có payment → từ chối
+    IF EXISTS (
+        SELECT 1 FROM Payments p
+        JOIN deleted d ON p.order_id = d.order_id
+    )
+    BEGIN
+        RAISERROR(N'[TRIGGER] Không thể xoá đơn hàng đã có thanh toán. Hãy refund trước.', 16, 1);
+        ROLLBACK TRANSACTION;
+        RETURN;
+    END
+
+    -- Xoá an toàn: không có payment
+    DELETE FROM Orders WHERE order_id IN (SELECT order_id FROM deleted);
+
+    INSERT INTO AuditLog (table_name, action, record_id, detail)
+    SELECT 'Orders', 'DELETE', order_id,
+           N'Xoá đơn hàng ' + CAST(order_id AS NVARCHAR) +
+           N' (status: ' + status + N')'
+    FROM deleted;
+END
+GO
+
 -- =====================================================
 -- PHẦN 7: INDEXES (tối ưu hiệu năng truy vấn)
 -- =====================================================
@@ -1775,11 +1841,13 @@ GO
 CREATE INDEX IX_Orders_Status        ON Orders(status);
 CREATE INDEX IX_Orders_Customer      ON Orders(customer_id);
 CREATE INDEX IX_Orders_Date          ON Orders(order_date);
-CREATE INDEX IX_Orders_Warehouse     ON Orders(warehouse_id);           -- [FIX v3]
+CREATE INDEX IX_Orders_Warehouse     ON Orders(warehouse_id);
 CREATE INDEX IX_OrderItems_Order     ON OrderItems(order_id);
 CREATE INDEX IX_OrderItems_Variant   ON OrderItems(variant_id);
 CREATE INDEX IX_Inventory_Variant    ON Inventory(variant_id);
 CREATE INDEX IX_Inventory_Warehouse  ON Inventory(warehouse_id);
+CREATE INDEX IX_Inventory_Variant_Warehouse ON Inventory(variant_id, warehouse_id); -- [FIX v5-6] composite
+CREATE INDEX IX_Payments_Order       ON Payments(order_id);                          -- [FIX v5-6]
 CREATE INDEX IX_Products_Category    ON Products(category_id);
 CREATE INDEX IX_Products_Brand       ON Products(brand_id);
 CREATE INDEX IX_ProductVariants_Prod ON ProductVariants(product_id);
@@ -1789,14 +1857,14 @@ GO
 -- KIỂM TRA NHANH
 -- =====================================================
 PRINT N'';
-PRINT N'✅ ĐÃ TẠO XONG DATABASE ClothingStoreDB (FINAL v3)';
+PRINT N'✅ ĐÃ TẠO XONG DATABASE ClothingStoreDB (FINAL v5 — HOÀN CHỈNH)';
 PRINT N'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
-PRINT N'  BẢNG    : 17 bảng (Orders + warehouse_id, Customers + is_active)';
+PRINT N'  BẢNG    : 18 bảng (Orders + warehouse_id, Customers + is_active)';
 PRINT N'  VIEWS   : 12 views (+ vw_ActiveProducts, vw_ActiveCustomers)';
-PRINT N'  PROCS   : 10 stored procedures (sp_CreateOrder + sp_UpdateOrderStatus đã fix)';
+PRINT N'  PROCS   : 10 stored procedures';
 PRINT N'  FUNCS   : 10 functions';
-PRINT N'  TRIGGERS: 14 triggers (+ trg_ValidatePaymentAmount, trg_AuditOrderItems, trg_AuditPayments)';
-PRINT N'  INDEXES : 11 indexes (+ IX_Orders_Warehouse)';
+PRINT N'  TRIGGERS: 16 triggers';
+PRINT N'  INDEXES : 13 indexes (+ composite Inventory, Payments_Order)';
 PRINT N'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
 PRINT N'';
 PRINT N'-- DEMO TESTS (dán vào query window mới):';
@@ -1808,18 +1876,22 @@ PRINT N'--   @items_xml=''<items><i vid="1" qty="2"/></items>'',';
 PRINT N'--   @warehouse_id=1, @new_order_id=@oid OUTPUT;';
 PRINT N'-- SELECT @oid AS new_order_id;';
 PRINT N'';
-PRINT N'-- [2] Cập nhật trạng thái đúng state machine:';
+PRINT N'-- [2] State machine (sẽ báo lỗi nếu nhảy cóc):';
 PRINT N'-- EXEC sp_UpdateOrderStatus @order_id=18, @new_status=''confirmed'';  -- OK';
-PRINT N'-- EXEC sp_UpdateOrderStatus @order_id=18, @new_status=''delivered'';  -- LỖI: bước nhảy';
+PRINT N'-- EXEC sp_UpdateOrderStatus @order_id=18, @new_status=''delivered'';  -- LỖI';
 PRINT N'';
-PRINT N'-- [3] Các view hữu ích:';
+PRINT N'-- [3] Trigger bảo vệ:';
+PRINT N'-- UPDATE OrderItems SET quantity=99 WHERE order_id=1; -- LỖI: đơn đã reserve';
+PRINT N'-- DELETE FROM Orders WHERE order_id=1;                -- LỖI: đã có payment';
+PRINT N'';
+PRINT N'-- [4] Các view hữu ích:';
 PRINT N'-- SELECT * FROM vw_LowStockAlert      ORDER BY shortage DESC;';
 PRINT N'-- SELECT * FROM vw_TopCustomers        ORDER BY total_spent DESC;';
 PRINT N'-- SELECT * FROM vw_MonthlyRevenue      ORDER BY yr, mo;';
 PRINT N'-- SELECT * FROM vw_TopSellingProducts  ORDER BY qty_sold DESC;';
 PRINT N'-- SELECT * FROM AuditLog               ORDER BY changed_at DESC;';
 PRINT N'';
-PRINT N'-- [4] Functions:';
+PRINT N'-- [5] Functions:';
 PRINT N'-- SELECT dbo.fn_FormatVND(1500000);';
 PRINT N'-- SELECT dbo.fn_GetVariantFullName(1);';
 PRINT N'-- SELECT dbo.fn_GetCustomerTier(4);';
