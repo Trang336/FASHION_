@@ -1,4 +1,3 @@
--- =====================================================
 -- HỆ THỐNG QUẢN LÝ BÁN QUẦN ÁO
 -- sử dụng SQL Server 
 -- Bao gồm: Schema + Mock Data + 10 Views
