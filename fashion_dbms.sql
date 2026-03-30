@@ -1,36 +1,18 @@
 -- =====================================================
 -- HỆ THỐNG QUẢN LÝ BÁN QUẦN ÁO
 -- SQL Server | Đồ án môn CSDL nâng cao
--- Bao gồm: Schema + Mock Data + 12 Views
---          + 10 Procedures + 10 Functions + 14 Triggers
---          + 11 Indexes
--- Phiên bản: FINAL v4 — fix toàn bộ 21 issues
--- Fixes v2:
---   ✔ INSTEAD OF UPDATE trigger → AFTER + ROLLBACK
---   ✔ sp_CreateOrder hỗ trợ @warehouse_id linh hoạt
---   ✔ Trigger hoàn kho khi cancel (trg_RestoreStockOnCancel)
---   ✔ Xóa trigger duplicate (InventoryUpdatedAt)
---   ✔ UNIQUE brand_name, CHECK email format, CHECK gender
---   ✔ 10 Indexes cho hiệu năng truy vấn
--- Fixes v3 (16 issues tổng):
---   ✔ Orders.warehouse_id — liên kết đơn hàng với kho
---   ✔ Trigger trừ/hoàn kho dùng i.warehouse_id (không hardcode = 1)
---   ✔ Cancel đơn chưa reserve KHÔNG hoàn kho (is_stock_reserved check)
---   ✔ sp_CreateOrder: UPDLOCK chống race condition
---   ✔ sp_CreateOrder: validate discount không âm & không vượt subtotal
---   ✔ sp_CreateOrder: validate XML không rỗng
---   ✔ sp_CreateOrder: warehouse_id trong JOIN (chặt hơn)
---   ✔ sp_CreateOrder: LEFT JOIN check variant tồn tại trong kho
---   ✔ sp_UpdateOrderStatus: state machine + UPDLOCK chống race condition
---   ✔ trg_ValidatePaymentAmount: GROUP BY đúng cách
---   ✔ Soft delete: Customers.is_active + 2 views Active*
---   ✔ AuditLog mở rộng: trg_AuditOrderItems + trg_AuditPayments
--- Fixes v4 (21 issues tổng):
---   ✔ (1) Double deduct khóa cứng: delivered không trừ nếu is_stock_reserved = 1
---   ✔ (2) Cancel sau delivered bị chặn: trg_RestoreStockOnCancel check d.status <> 'delivered'
---   ✔ (3) sp_CreateOrder kiểm tra warehouse_id tồn tại trong Warehouses
---   ✔ (4) SERIALIZABLE isolation trong sp_CreateOrder & sp_UpdateOrderStatus
---   ✔ (5) trg_ValidatePaymentAmount chỉ tính khi inserted.status = 'completed'
+-- Bao gồm: Schema + Mock Data + 10 Views
+-- + 10 Procedures + 10 Functions + 12 Triggers
+-- + 10 Indexes
+-- Phiên bản: FINAL v3 — đã fix trigger hoàn kho
+-- Fixes:
+-- ✔ INSTEAD OF UPDATE trigger đủ tất cả cột
+-- ✔ sp_CreateOrder hỗ trợ @warehouse_id linh hoạt
+-- ✔ [FIX v3] trg_RestoreStockOnCancel: chỉ hoàn kho khi is_stock_reserved = 1
+-- ✔ Xóa trigger duplicate (InventoryUpdatedAt)
+-- ✔ UNIQUE brand_name, CHECK email format, CHECK gender
+-- ✔ 10 Indexes cho hiệu năng truy vấn
+-- ✔ sp_UpdateOrderStatus: guard không cho cancel đơn đã delivered
 -- =====================================================
 
 USE master;
@@ -80,14 +62,14 @@ GO
 
 -- 1.4 USERS
 CREATE TABLE Users (
-    user_id       INT           PRIMARY KEY IDENTITY(1,1),
-    role_id       INT           NOT NULL,
+    user_id       INT PRIMARY KEY IDENTITY(1,1),
+    role_id       INT          NOT NULL,
     full_name     NVARCHAR(100) NOT NULL,
     email         NVARCHAR(100) NOT NULL UNIQUE,
     phone         VARCHAR(15),
-    password_hash VARCHAR(255)  NOT NULL,
-    is_active     BIT           DEFAULT 1,
-    created_at    DATETIME      DEFAULT GETDATE(),
+    password_hash VARCHAR(255) NOT NULL,
+    is_active     BIT          DEFAULT 1,
+    created_at    DATETIME     DEFAULT GETDATE(),
     CONSTRAINT CHK_user_email CHECK (email LIKE '%@%.%'),
     FOREIGN KEY (role_id) REFERENCES Roles(role_id)
 );
@@ -112,9 +94,9 @@ CREATE TABLE Brands (
 );
 GO
 
--- 1.7 PRODUCTS (không chứa size/màu — tách sang ProductVariants)
+-- 1.7 PRODUCTS
 CREATE TABLE Products (
-    product_id   INT           PRIMARY KEY IDENTITY(1,1),
+    product_id   INT PRIMARY KEY IDENTITY(1,1),
     category_id  INT           NOT NULL,
     brand_id     INT           NOT NULL,
     product_name NVARCHAR(200) NOT NULL,
@@ -130,7 +112,7 @@ GO
 
 -- 1.8 PRODUCT VARIANTS (size + màu)
 CREATE TABLE ProductVariants (
-    variant_id  INT           PRIMARY KEY IDENTITY(1,1),
+    variant_id  INT PRIMARY KEY IDENTITY(1,1),
     product_id  INT           NOT NULL,
     size        NVARCHAR(10),
     color       NVARCHAR(50),
@@ -144,23 +126,23 @@ GO
 
 -- 1.9 WAREHOUSES
 CREATE TABLE Warehouses (
-    warehouse_id   INT           PRIMARY KEY IDENTITY(1,1),
+    warehouse_id   INT PRIMARY KEY IDENTITY(1,1),
     warehouse_name NVARCHAR(100) NOT NULL,
     address        NVARCHAR(300)
 );
 GO
 
--- 1.10 INVENTORY: (variant_id, warehouse_id) là key duy nhất
+-- 1.10 INVENTORY
 CREATE TABLE Inventory (
-    inventory_id INT      PRIMARY KEY IDENTITY(1,1),
-    variant_id   INT      NOT NULL,
-    warehouse_id INT      NOT NULL,
-    quantity     INT      DEFAULT 0,
-    min_quantity INT      DEFAULT 5,
+    inventory_id INT PRIMARY KEY IDENTITY(1,1),
+    variant_id   INT  NOT NULL,
+    warehouse_id INT  NOT NULL,
+    quantity     INT  DEFAULT 0,
+    min_quantity INT  DEFAULT 5,
     updated_at   DATETIME DEFAULT GETDATE(),
-    CONSTRAINT UQ_inv     UNIQUE  (variant_id, warehouse_id),
-    CONSTRAINT CHK_inv_qty CHECK  (quantity >= 0),
-    CONSTRAINT CHK_inv_min CHECK  (min_quantity >= 0),
+    CONSTRAINT UQ_inv     UNIQUE (variant_id, warehouse_id),
+    CONSTRAINT CHK_inv_qty CHECK (quantity >= 0),
+    CONSTRAINT CHK_inv_min CHECK (min_quantity >= 0),
     FOREIGN KEY (variant_id)   REFERENCES ProductVariants(variant_id),
     FOREIGN KEY (warehouse_id) REFERENCES Warehouses(warehouse_id)
 );
@@ -168,19 +150,19 @@ GO
 
 -- 1.11 SUPPLIERS
 CREATE TABLE Suppliers (
-    supplier_id    INT           PRIMARY KEY IDENTITY(1,1),
-    supplier_name  NVARCHAR(200) NOT NULL,
-    contact_person NVARCHAR(100),
-    phone          VARCHAR(15),
-    email          NVARCHAR(100),
-    address        NVARCHAR(300),
-    is_active      BIT DEFAULT 1
+    supplier_id     INT PRIMARY KEY IDENTITY(1,1),
+    supplier_name   NVARCHAR(200) NOT NULL,
+    contact_person  NVARCHAR(100),
+    phone           VARCHAR(15),
+    email           NVARCHAR(100),
+    address         NVARCHAR(300),
+    is_active       BIT DEFAULT 1
 );
 GO
 
--- 1.12 STOCK RECEIPTS (phiếu nhập kho)
+-- 1.12 STOCK RECEIPTS
 CREATE TABLE StockReceipts (
-    receipt_id   INT           PRIMARY KEY IDENTITY(1,1),
+    receipt_id   INT PRIMARY KEY IDENTITY(1,1),
     supplier_id  INT           NOT NULL,
     warehouse_id INT           NOT NULL,
     created_by   INT           NOT NULL,
@@ -194,7 +176,7 @@ CREATE TABLE StockReceipts (
 GO
 
 CREATE TABLE StockReceiptItems (
-    item_id    INT           PRIMARY KEY IDENTITY(1,1),
+    item_id    INT PRIMARY KEY IDENTITY(1,1),
     receipt_id INT           NOT NULL,
     variant_id INT           NOT NULL,
     quantity   INT           NOT NULL,
@@ -207,9 +189,8 @@ CREATE TABLE StockReceiptItems (
 GO
 
 -- 1.13 CUSTOMERS
--- [FIX v3] Thêm is_active cho soft delete
 CREATE TABLE Customers (
-    customer_id    INT           PRIMARY KEY IDENTITY(1,1),
+    customer_id    INT PRIMARY KEY IDENTITY(1,1),
     full_name      NVARCHAR(100) NOT NULL,
     email          NVARCHAR(100),
     phone          VARCHAR(15),
@@ -218,17 +199,15 @@ CREATE TABLE Customers (
     birthday       DATE,
     loyalty_points INT      DEFAULT 0,
     created_at     DATETIME DEFAULT GETDATE(),
-    is_active      BIT      DEFAULT 1,                              -- [FIX v3] soft delete
-    CONSTRAINT CHK_customer_email  CHECK (email IS NULL OR email LIKE '%@%.%'),
-    CONSTRAINT CHK_customer_gender CHECK (gender IS NULL OR gender IN (N'Nam', N'Nữ', N'Khác'))
+    CONSTRAINT CHK_customer_email   CHECK (email IS NULL OR email LIKE '%@%.%'),
+    CONSTRAINT CHK_customer_gender  CHECK (gender IS NULL OR gender IN (N'Nam', N'Nữ', N'Khác'))
 );
 GO
 
 -- 1.14 ORDERS
 -- is_stock_reserved: cờ đánh dấu kho đã bị trừ lúc đặt hàng (RESERVE model)
--- warehouse_id: [FIX v3] liên kết đơn hàng với kho — dùng trong trigger trừ/hoàn kho
 CREATE TABLE Orders (
-    order_id          INT           PRIMARY KEY IDENTITY(1,1),
+    order_id          INT PRIMARY KEY IDENTITY(1,1),
     customer_id       INT           NOT NULL,
     created_by        INT           NOT NULL,
     order_date        DATETIME      DEFAULT GETDATE(),
@@ -238,19 +217,17 @@ CREATE TABLE Orders (
     total_amount      DECIMAL(14,2) NOT NULL,
     note              NVARCHAR(300),
     is_stock_reserved BIT           DEFAULT 0,
-    warehouse_id      INT           NULL,                           -- [FIX v3]
     CONSTRAINT CHK_order_status   CHECK (status IN ('pending','confirmed','shipping','shipped','delivered','cancelled')),
     CONSTRAINT CHK_order_total    CHECK (total_amount >= 0),
     CONSTRAINT CHK_order_discount CHECK (discount_amount >= 0),
     FOREIGN KEY (customer_id) REFERENCES Customers(customer_id),
-    FOREIGN KEY (created_by)  REFERENCES Users(user_id),
-    FOREIGN KEY (warehouse_id) REFERENCES Warehouses(warehouse_id) -- [FIX v3]
+    FOREIGN KEY (created_by)  REFERENCES Users(user_id)
 );
 GO
 
 -- 1.15 ORDER ITEMS
 CREATE TABLE OrderItems (
-    item_id    INT           PRIMARY KEY IDENTITY(1,1),
+    item_id    INT PRIMARY KEY IDENTITY(1,1),
     order_id   INT           NOT NULL,
     variant_id INT           NOT NULL,
     quantity   INT           NOT NULL,
@@ -264,7 +241,7 @@ GO
 
 -- 1.16 PAYMENTS
 CREATE TABLE Payments (
-    payment_id      INT           PRIMARY KEY IDENTITY(1,1),
+    payment_id      INT PRIMARY KEY IDENTITY(1,1),
     order_id        INT           NOT NULL,
     payment_date    DATETIME      DEFAULT GETDATE(),
     amount          DECIMAL(14,2) NOT NULL,
@@ -277,9 +254,9 @@ CREATE TABLE Payments (
 );
 GO
 
--- 1.17 AUDIT LOG (dùng cho Triggers)
+-- 1.17 AUDIT LOG
 CREATE TABLE AuditLog (
-    log_id     INT           PRIMARY KEY IDENTITY(1,1),
+    log_id     INT PRIMARY KEY IDENTITY(1,1),
     table_name NVARCHAR(50),
     action     NVARCHAR(20),
     record_id  INT,
@@ -313,68 +290,67 @@ INSERT INTO Permissions (module, action) VALUES
 INSERT INTO RolePermissions (role_id, permission_id)
 SELECT 1, permission_id FROM Permissions; -- Admin: tất cả
 
-INSERT INTO RolePermissions (role_id, permission_id)  -- Manager
+INSERT INTO RolePermissions (role_id, permission_id) -- Manager
 SELECT 2, permission_id FROM Permissions
 WHERE (module IN ('products','inventory','orders','reports','suppliers') AND action IN ('read','update'))
    OR (module = 'orders' AND action = 'create');
 
-INSERT INTO RolePermissions (role_id, permission_id)  -- Sales Staff
+INSERT INTO RolePermissions (role_id, permission_id) -- Sales Staff
 SELECT 3, permission_id FROM Permissions
 WHERE (module = 'orders'    AND action IN ('read','create','update'))
    OR (module = 'products'  AND action = 'read')
    OR (module = 'inventory' AND action = 'read');
 
-INSERT INTO RolePermissions (role_id, permission_id)  -- Warehouse Staff
+INSERT INTO RolePermissions (role_id, permission_id) -- Warehouse Staff
 SELECT 4, permission_id FROM Permissions
 WHERE module IN ('inventory','suppliers') AND action IN ('read','create','update');
 
-INSERT INTO RolePermissions (role_id, permission_id)  -- Viewer
-SELECT 5, permission_id FROM Permissions
-WHERE action = 'read';
+INSERT INTO RolePermissions (role_id, permission_id) -- Viewer
+SELECT 5, permission_id FROM Permissions WHERE action = 'read';
 
 -- USERS
 INSERT INTO Users (role_id, full_name, email, phone, password_hash) VALUES
-(1, N'Nguyễn Văn Admin',      'admin@store.vn',      '0901000001', 'hash_admin'),
-(2, N'Trần Thị Manager',      'manager@store.vn',    '0901000002', 'hash_mgr'),
-(3, N'Lê Văn Sales 1',        'sales1@store.vn',     '0901000003', 'hash_s1'),
-(3, N'Phạm Thị Sales 2',      'sales2@store.vn',     '0901000004', 'hash_s2'),
-(3, N'Ngô Thị Sales 3',       'sales3@store.vn',     '0901000006', 'hash_s3'),
-(4, N'Hoàng Văn Warehouse',   'warehouse@store.vn',  '0901000005', 'hash_wh'),
-(5, N'Vũ Minh Viewer',        'viewer@store.vn',     '0901000007', 'hash_vw');
+(1, N'Nguyễn Văn Admin',    'admin@store.vn',     '0901000001', 'hash_admin'),
+(2, N'Trần Thị Manager',    'manager@store.vn',   '0901000002', 'hash_mgr'),
+(3, N'Lê Văn Sales 1',      'sales1@store.vn',    '0901000003', 'hash_s1'),
+(3, N'Phạm Thị Sales 2',    'sales2@store.vn',    '0901000004', 'hash_s2'),
+(3, N'Ngô Thị Sales 3',     'sales3@store.vn',    '0901000006', 'hash_s3'),
+(4, N'Hoàng Văn Warehouse', 'warehouse@store.vn', '0901000005', 'hash_wh'),
+(5, N'Vũ Minh Viewer',      'viewer@store.vn',    '0901000007', 'hash_vw');
 
--- CATEGORIES (cha → con)
+-- CATEGORIES
 INSERT INTO Categories (parent_id, category_name, slug) VALUES
-(NULL,N'Áo','ao'),            (NULL,N'Quần','quan'),
-(NULL,N'Váy & Đầm','vay-dam'),(NULL,N'Phụ kiện','phu-kien'),
-(1,N'Áo thun','ao-thun'),     (1,N'Áo sơ mi','ao-so-mi'),
-(1,N'Áo khoác','ao-khoac'),   (1,N'Áo hoodie','ao-hoodie'),
-(2,N'Quần jean','quan-jean'), (2,N'Quần kaki','quan-kaki'),
+(NULL,N'Áo','ao'),          (NULL,N'Quần','quan'),
+(NULL,N'Váy & Đầm','vay-dam'), (NULL,N'Phụ kiện','phu-kien'),
+(1,N'Áo thun','ao-thun'),   (1,N'Áo sơ mi','ao-so-mi'),
+(1,N'Áo khoác','ao-khoac'), (1,N'Áo hoodie','ao-hoodie'),
+(2,N'Quần jean','quan-jean'),(2,N'Quần kaki','quan-kaki'),
 (2,N'Quần short','quan-short'),(3,N'Váy ngắn','vay-ngan'),
-(3,N'Đầm dài','dam-dai'),     (4,N'Mũ & Nón','mu-non'),
+(3,N'Đầm dài','dam-dai'),   (4,N'Mũ & Nón','mu-non'),
 (4,N'Thắt lưng','that-lung');
 
 -- BRANDS
 INSERT INTO Brands (brand_name, country) VALUES
 (N'Local Brand VN','Việt Nam'),(N'SkyWear','Việt Nam'),
-(N'UrbanFit','Việt Nam'),      (N'TrendyHouse','Việt Nam'),
-(N'EcoThreads','Việt Nam'),    (N'StreetStyle Co','Việt Nam'),
-(N'PureBasic','Việt Nam'),     (N'NightOwl Apparel','Việt Nam');
+(N'UrbanFit','Việt Nam'),     (N'TrendyHouse','Việt Nam'),
+(N'EcoThreads','Việt Nam'),   (N'StreetStyle Co','Việt Nam'),
+(N'PureBasic','Việt Nam'),    (N'NightOwl Apparel','Việt Nam');
 
 -- WAREHOUSES
 INSERT INTO Warehouses (warehouse_name, address) VALUES
-(N'Kho Hà Nội',      N'123 Đường Láng, Đống Đa, Hà Nội'),
-(N'Kho Hồ Chí Minh', N'456 Lý Thường Kiệt, Q.10, TP.HCM'),
-(N'Kho Đà Nẵng',     N'789 Nguyễn Văn Linh, Đà Nẵng');
+(N'Kho Hà Nội',        N'123 Đường Láng, Đống Đa, Hà Nội'),
+(N'Kho Hồ Chí Minh',  N'456 Lý Thường Kiệt, Q.10, TP.HCM'),
+(N'Kho Đà Nẵng',      N'789 Nguyễn Văn Linh, Đà Nẵng');
 
 -- SUPPLIERS
 INSERT INTO Suppliers (supplier_name, contact_person, phone, email, address) VALUES
 (N'Dệt may Phong Phú',  N'Nguyễn Thành Long','0281000001','phongphu@sup.vn', N'Bình Dương'),
 (N'Xưởng may Hoàng Gia',N'Trần Minh Hoàng',  '0281000002','hoanggia@sup.vn', N'TP.HCM'),
-(N'Vải Việt Tiến',      N'Lê Thị Thu',       '0281000003','viettien@sup.vn', N'Long An'),
-(N'May mặc An Phát',    N'Phạm Văn An',      '0281000004','anphat@sup.vn',   N'Hà Nội'),
-(N'Xưởng Minh Tâm',     N'Võ Minh Tâm',      '0281000005','minhtam@sup.vn',  N'Đà Nẵng');
+(N'Vải Việt Tiến',      N'Lê Thị Thu',        '0281000003','viettien@sup.vn', N'Long An'),
+(N'May mặc An Phát',    N'Phạm Văn An',       '0281000004','anphat@sup.vn',   N'Hà Nội'),
+(N'Xưởng Minh Tâm',    N'Võ Minh Tâm',       '0281000005','minhtam@sup.vn',  N'Đà Nẵng');
 
--- PRODUCTS (~150 sản phẩm)
+-- PRODUCTS
 INSERT INTO Products (category_id, brand_id, product_name, base_price) VALUES
 -- Áo thun (cat 5) × 20
 (5,1,N'Áo thun nam basic trắng',150000),(5,1,N'Áo thun nam basic đen',150000),
@@ -448,11 +424,11 @@ INSERT INTO Products (category_id, brand_id, product_name, base_price) VALUES
 (15,3,N'Thắt lưng canvas',160000),(15,4,N'Thắt lưng nữ',170000);
 GO
 
--- PRODUCT VARIANTS (size × màu)
+-- PRODUCT VARIANTS
 DECLARE @p INT = 1;
 DECLARE @sizes TABLE (sz NVARCHAR(10), ord INT);
 DECLARE @colors TABLE (col NVARCHAR(50), cod VARCHAR(3));
-INSERT INTO @sizes  VALUES ('S',1),('M',2),('L',3),('XL',4);
+INSERT INTO @sizes VALUES ('S',1),('M',2),('L',3),('XL',4);
 INSERT INTO @colors VALUES (N'Trắng','TRG'),(N'Đen','DEN');
 WHILE @p <= 20
 BEGIN
@@ -468,7 +444,7 @@ GO
 DECLARE @p INT = 21;
 DECLARE @szShirt TABLE (sz NVARCHAR(10));
 DECLARE @colShirt TABLE (col NVARCHAR(50), cod VARCHAR(3));
-INSERT INTO @szShirt  VALUES ('S'),('M'),('L'),('XL');
+INSERT INTO @szShirt VALUES ('S'),('M'),('L'),('XL');
 INSERT INTO @colShirt VALUES (N'Trắng','TRG'),(N'Xanh nhạt','XN');
 WHILE @p <= 32
 BEGIN
@@ -484,7 +460,7 @@ GO
 DECLARE @p INT = 33;
 DECLARE @szJacket TABLE (sz NVARCHAR(10));
 DECLARE @colJacket TABLE (col NVARCHAR(50), cod VARCHAR(3));
-INSERT INTO @szJacket  VALUES ('M'),('L'),('XL'),('XXL');
+INSERT INTO @szJacket VALUES ('M'),('L'),('XL'),('XXL');
 INSERT INTO @colJacket VALUES (N'Đen','DEN'),(N'Xanh','XAN');
 WHILE @p <= 44
 BEGIN
@@ -500,7 +476,7 @@ GO
 DECLARE @p INT = 45;
 DECLARE @szH TABLE (sz NVARCHAR(10));
 DECLARE @colH TABLE (col NVARCHAR(50), cod VARCHAR(3));
-INSERT INTO @szH  VALUES ('S'),('M'),('L'),('XL');
+INSERT INTO @szH VALUES ('S'),('M'),('L'),('XL');
 INSERT INTO @colH VALUES (N'Xám','XAM'),(N'Đen','DEN');
 WHILE @p <= 54
 BEGIN
@@ -516,7 +492,7 @@ GO
 DECLARE @p INT = 55;
 DECLARE @szJ TABLE (sz NVARCHAR(10));
 DECLARE @colJ TABLE (col NVARCHAR(50), cod VARCHAR(3));
-INSERT INTO @szJ  VALUES ('28'),('30'),('32'),('34');
+INSERT INTO @szJ VALUES ('28'),('30'),('32'),('34');
 INSERT INTO @colJ VALUES (N'Xanh nhạt','XN'),(N'Đen','DEN');
 WHILE @p <= 69
 BEGIN
@@ -530,7 +506,7 @@ END
 GO
 
 DECLARE @p INT = 70;
-DECLARE @sz3 TABLE (sz NVARCHAR(10));
+DECLARE @sz3  TABLE (sz NVARCHAR(10));
 DECLARE @col3 TABLE (col NVARCHAR(50), cod VARCHAR(4));
 INSERT INTO @sz3  VALUES ('S'),('M'),('L');
 INSERT INTO @col3 VALUES (N'Be','BE'),(N'Xanh rêu','XR');
@@ -550,7 +526,7 @@ BEGIN
 END
 GO
 
--- INVENTORY: mỗi variant × 3 kho, số lượng ngẫu nhiên 10-100
+-- INVENTORY
 INSERT INTO Inventory (variant_id, warehouse_id, quantity, min_quantity)
 SELECT v.variant_id, w.warehouse_id,
        ABS(CHECKSUM(NEWID())) % 91 + 10,
@@ -559,33 +535,33 @@ FROM ProductVariants v
 CROSS JOIN Warehouses w;
 GO
 
--- CUSTOMERS (25 khách hàng)
+-- CUSTOMERS
 INSERT INTO Customers (full_name, email, phone, address, gender, birthday, loyalty_points) VALUES
-(N'Nguyễn Thị Hoa',    'hoa@gmail.com',    '0901111001',N'Q1, TP.HCM',         N'Nữ', '1995-03-12',250),
-(N'Trần Văn Bình',     'binh@gmail.com',   '0901111002',N'Ba Đình, HN',         N'Nam','1992-07-20',180),
-(N'Lê Thị Mai',        'mai@gmail.com',    '0901111003',N'Hải Châu, ĐN',        N'Nữ', '1998-11-05',90),
-(N'Phạm Quốc Hùng',   'hung@gmail.com',   '0901111004',N'Q3, TP.HCM',          N'Nam','1990-01-15',320),
-(N'Hoàng Thị Linh',   'linh@gmail.com',   '0901111005',N'Hoàn Kiếm, HN',       N'Nữ', '1997-05-22',75),
-(N'Vũ Minh Khôi',     'khoi@gmail.com',   '0901111006',N'Q7, TP.HCM',          N'Nam','1993-09-30',410),
-(N'Đặng Thị Yến',     'yen@gmail.com',    '0901111007',N'Thanh Khê, ĐN',       N'Nữ', '1999-02-14',60),
-(N'Bùi Văn Đức',      'duc@gmail.com',    '0901111008',N'Cầu Giấy, HN',        N'Nam','1988-12-03',200),
-(N'Ngô Thị Thanh',    'thanh@gmail.com',  '0901111009',N'Bình Thạnh, HCM',     N'Nữ', '1996-06-18',130),
-(N'Dương Văn Tùng',   'tung@gmail.com',   '0901111010',N'Q5, TP.HCM',          N'Nam','1994-04-07',290),
-(N'Phan Thị Ngọc',    'ngoc@gmail.com',   '0901111011',N'Liên Chiểu, ĐN',      N'Nữ', '2000-08-25',45),
-(N'Tô Văn Hải',       'hai@gmail.com',    '0901111012',N'Đống Đa, HN',         N'Nam','1991-10-11',160),
-(N'Lý Thị Kim Anh',   'kimanh@gmail.com', '0901111013',N'Tân Bình, HCM',       N'Nữ', '1997-03-28',220),
-(N'Trương Công Minh', 'minh@gmail.com',   '0901111014',N'Long Biên, HN',       N'Nam','1989-07-16',380),
-(N'Cao Thị Thúy',     'thuy@gmail.com',   '0901111015',N'Hòa Vang, ĐN',        N'Nữ', '2001-12-09',30),
-(N'Đinh Văn Phúc',    'phuc@gmail.com',   '0901111016',N'Q10, TP.HCM',         N'Nam','1995-05-04',140),
-(N'Huỳnh Thị Diễm',   'diem@gmail.com',   '0901111017',N'Hà Đông, HN',         N'Nữ', '1998-09-13',70),
-(N'Lưu Quang Trung',  'trung@gmail.com',  '0901111018',N'Ngũ Hành Sơn, ĐN',   N'Nam','1993-11-27',190),
-(N'Kiều Thị Bích',    'bich@gmail.com',   '0901111019',N'Phú Nhuận, HCM',      N'Nữ', '1996-01-31',110),
-(N'Mai Văn Toàn',     'toan@gmail.com',   '0901111020',N'Tây Hồ, HN',          N'Nam','1990-06-08',260),
-(N'Trịnh Thị Lan',    'lan@gmail.com',    '0901111021',N'Q2, TP.HCM',          N'Nữ', '1994-08-17',85),
-(N'Đỗ Văn Long',      'long@gmail.com',   '0901111022',N'Đống Đa, HN',         N'Nam','1987-03-25',340),
-(N'Hà Thị Thu',       'thu@gmail.com',    '0901111023',N'Ngũ Hành Sơn, ĐN',   N'Nữ', '2002-05-30',20),
-(N'Lương Văn Dũng',   'dung@gmail.com',   '0901111024',N'Q Bình Thạnh, HCM',  N'Nam','1991-12-15',170),
-(N'Trần Thị Ngân',    'ngan@gmail.com',   '0901111025',N'Hoàn Kiếm, HN',       N'Nữ', '1999-07-04',50);
+(N'Nguyễn Thị Hoa',   'hoa@gmail.com',    '0901111001',N'Q1, TP.HCM',          N'Nữ', '1995-03-12',250),
+(N'Trần Văn Bình',    'binh@gmail.com',   '0901111002',N'Ba Đình, HN',          N'Nam','1992-07-20',180),
+(N'Lê Thị Mai',       'mai@gmail.com',    '0901111003',N'Hải Châu, ĐN',         N'Nữ', '1998-11-05', 90),
+(N'Phạm Quốc Hùng',   'hung@gmail.com',   '0901111004',N'Q3, TP.HCM',           N'Nam','1990-01-15',320),
+(N'Hoàng Thị Linh',   'linh@gmail.com',   '0901111005',N'Hoàn Kiếm, HN',        N'Nữ', '1997-05-22', 75),
+(N'Vũ Minh Khôi',     'khoi@gmail.com',   '0901111006',N'Q7, TP.HCM',           N'Nam','1993-09-30',410),
+(N'Đặng Thị Yến',     'yen@gmail.com',    '0901111007',N'Thanh Khê, ĐN',        N'Nữ', '1999-02-14', 60),
+(N'Bùi Văn Đức',      'duc@gmail.com',    '0901111008',N'Cầu Giấy, HN',         N'Nam','1988-12-03',200),
+(N'Ngô Thị Thanh',    'thanh@gmail.com',  '0901111009',N'Bình Thạnh, HCM',      N'Nữ', '1996-06-18',130),
+(N'Dương Văn Tùng',   'tung@gmail.com',   '0901111010',N'Q5, TP.HCM',           N'Nam','1994-04-07',290),
+(N'Phan Thị Ngọc',    'ngoc@gmail.com',   '0901111011',N'Liên Chiểu, ĐN',       N'Nữ', '2000-08-25', 45),
+(N'Tô Văn Hải',       'hai@gmail.com',    '0901111012',N'Đống Đa, HN',          N'Nam','1991-10-11',160),
+(N'Lý Thị Kim Anh',   'kimanh@gmail.com', '0901111013',N'Tân Bình, HCM',        N'Nữ', '1997-03-28',220),
+(N'Trương Công Minh', 'minh@gmail.com',   '0901111014',N'Long Biên, HN',         N'Nam','1989-07-16',380),
+(N'Cao Thị Thúy',     'thuy@gmail.com',   '0901111015',N'Hòa Vang, ĐN',         N'Nữ', '2001-12-09', 30),
+(N'Đinh Văn Phúc',    'phuc@gmail.com',   '0901111016',N'Q10, TP.HCM',          N'Nam','1995-05-04',140),
+(N'Huỳnh Thị Diễm',   'diem@gmail.com',   '0901111017',N'Hà Đông, HN',          N'Nữ', '1998-09-13', 70),
+(N'Lưu Quang Trung',  'trung@gmail.com',  '0901111018',N'Ngũ Hành Sơn, ĐN',    N'Nam','1993-11-27',190),
+(N'Kiều Thị Bích',    'bich@gmail.com',   '0901111019',N'Phú Nhuận, HCM',       N'Nữ', '1996-01-31',110),
+(N'Mai Văn Toàn',     'toan@gmail.com',   '0901111020',N'Tây Hồ, HN',           N'Nam','1990-06-08',260),
+(N'Trịnh Thị Lan',    'lan@gmail.com',    '0901111021',N'Q2, TP.HCM',           N'Nữ', '1994-08-17', 85),
+(N'Đỗ Văn Long',      'long@gmail.com',   '0901111022',N'Đống Đa, HN',          N'Nam','1987-03-25',340),
+(N'Hà Thị Thu',       'thu@gmail.com',    '0901111023',N'Ngũ Hành Sơn, ĐN',    N'Nữ', '2002-05-30', 20),
+(N'Lương Văn Dũng',   'dung@gmail.com',   '0901111024',N'Q Bình Thạnh, HCM',    N'Nam','1991-12-15',170),
+(N'Trần Thị Ngân',    'ngan@gmail.com',   '0901111025',N'Hoàn Kiếm, HN',        N'Nữ', '1999-07-04', 50);
 
 -- STOCK RECEIPTS
 INSERT INTO StockReceipts (supplier_id, warehouse_id, created_by, receipt_date, total_amount, note) VALUES
@@ -608,38 +584,38 @@ INSERT INTO StockReceiptItems (receipt_id, variant_id, quantity, unit_cost) VALU
 (7,1,30,90000),(7,5,30,90000),
 (8,81,40,168000),(8,82,40,168000);
 
--- ORDERS (30 đơn hàng) — [FIX v3] thêm warehouse_id = 1 cho tất cả đơn mẫu
-INSERT INTO Orders (customer_id, created_by, order_date, status, shipping_address, discount_amount, total_amount, warehouse_id) VALUES
-(1, 3,'2024-01-15 09:30','delivered', N'Q1, TP.HCM',        0,      520000, 1),
-(2, 3,'2024-01-18 14:00','delivered', N'Ba Đình, HN',        50000,  830000, 1),
-(3, 4,'2024-02-02 10:15','delivered', N'Hải Châu, ĐN',       0,      450000, 1),
-(4, 3,'2024-02-10 16:30','delivered', N'Q3, TP.HCM',         0,     1200000, 1),
-(5, 4,'2024-02-20 11:00','delivered', N'Hoàn Kiếm, HN',      100000, 680000, 1),
-(6, 3,'2024-03-05 09:00','delivered', N'Q7, TP.HCM',         0,      350000, 1),
-(7, 5,'2024-03-12 13:45','delivered', N'Thanh Khê, ĐN',      0,      590000, 1),
-(8, 3,'2024-03-22 15:20','delivered', N'Cầu Giấy, HN',       0,      960000, 1),
-(9, 4,'2024-04-01 10:30','delivered', N'Bình Thạnh, HCM',    50000,  415000, 1),
-(10,5,'2024-04-08 14:10','delivered', N'Q5, TP.HCM',         0,      780000, 1),
-(11,3,'2024-04-15 09:45','cancelled', N'Liên Chiểu, ĐN',     0,      280000, 1),
-(12,4,'2024-05-02 11:30','delivered', N'Đống Đa, HN',        0,     1050000, 1),
-(13,5,'2024-05-10 16:00','delivered', N'Tân Bình, HCM',      0,      460000, 1),
-(14,3,'2024-05-18 10:00','delivered', N'Long Biên, HN',      150000,1350000, 1),
-(15,4,'2024-06-03 13:00','delivered', N'Hòa Vang, ĐN',       0,      320000, 1),
-(16,5,'2024-06-12 09:15','shipped',   N'Q10, TP.HCM',        0,      870000, 2),
-(17,3,'2024-06-20 14:30','confirmed', N'Hà Đông, HN',        0,      540000, 1),
-(18,4,'2024-07-01 10:45','pending',   N'Ngũ Hành Sơn, ĐN',  0,      690000, 3),
-(19,5,'2024-07-08 11:00','shipped',   N'Phú Nhuận, HCM',     50000,  950000, 2),
-(20,3,'2024-07-15 15:30','pending',   N'Tây Hồ, HN',         0,      420000, 1),
-(1, 4,'2024-07-20 09:00','confirmed', N'Q1, TP.HCM',         0,      760000, 1),
-(3, 5,'2024-08-01 14:00','pending',   N'Hải Châu, ĐN',       0,      380000, 3),
-(5, 3,'2024-08-10 10:30','shipped',   N'Hoàn Kiếm, HN',      0,     1100000, 1),
-(2, 4,'2024-08-18 16:00','delivered', N'Ba Đình, HN',         0,      650000, 1),
-(6, 5,'2024-08-22 11:00','delivered', N'Q7, TP.HCM',         0,      420000, 2),
-(8, 3,'2024-09-01 10:00','delivered', N'Cầu Giấy, HN',       100000, 980000, 1),
-(10,4,'2024-09-10 14:30','shipped',   N'Q5, TP.HCM',         0,      730000, 2),
-(12,5,'2024-09-15 09:45','confirmed', N'Đống Đa, HN',        0,      560000, 1),
-(14,3,'2024-09-20 15:00','pending',   N'Long Biên, HN',      0,     1200000, 1),
-(4, 4,'2024-09-25 11:30','delivered', N'Q3, TP.HCM',         50000,  890000, 1);
+-- ORDERS
+INSERT INTO Orders (customer_id, created_by, order_date, status, shipping_address, discount_amount, total_amount) VALUES
+(1, 3,'2024-01-15 09:30','delivered', N'Q1, TP.HCM',          0,      520000),
+(2, 3,'2024-01-18 14:00','delivered', N'Ba Đình, HN',          50000,  830000),
+(3, 4,'2024-02-02 10:15','delivered', N'Hải Châu, ĐN',         0,      450000),
+(4, 3,'2024-02-10 16:30','delivered', N'Q3, TP.HCM',           0,     1200000),
+(5, 4,'2024-02-20 11:00','delivered', N'Hoàn Kiếm, HN',        100000, 680000),
+(6, 3,'2024-03-05 09:00','delivered', N'Q7, TP.HCM',           0,      350000),
+(7, 5,'2024-03-12 13:45','delivered', N'Thanh Khê, ĐN',        0,      590000),
+(8, 3,'2024-03-22 15:20','delivered', N'Cầu Giấy, HN',         0,      960000),
+(9, 4,'2024-04-01 10:30','delivered', N'Bình Thạnh, HCM',      50000,  415000),
+(10,5,'2024-04-08 14:10','delivered', N'Q5, TP.HCM',           0,      780000),
+(11,3,'2024-04-15 09:45','cancelled', N'Liên Chiểu, ĐN',       0,      280000),
+(12,4,'2024-05-02 11:30','delivered', N'Đống Đa, HN',          0,     1050000),
+(13,5,'2024-05-10 16:00','delivered', N'Tân Bình, HCM',        0,      460000),
+(14,3,'2024-05-18 10:00','delivered', N'Long Biên, HN',         150000,1350000),
+(15,4,'2024-06-03 13:00','delivered', N'Hòa Vang, ĐN',         0,      320000),
+(16,5,'2024-06-12 09:15','shipped',   N'Q10, TP.HCM',          0,      870000),
+(17,3,'2024-06-20 14:30','confirmed', N'Hà Đông, HN',          0,      540000),
+(18,4,'2024-07-01 10:45','pending',   N'Ngũ Hành Sơn, ĐN',    0,      690000),
+(19,5,'2024-07-08 11:00','shipped',   N'Phú Nhuận, HCM',       50000,  950000),
+(20,3,'2024-07-15 15:30','pending',   N'Tây Hồ, HN',           0,      420000),
+(1, 4,'2024-07-20 09:00','confirmed', N'Q1, TP.HCM',           0,      760000),
+(3, 5,'2024-08-01 14:00','pending',   N'Hải Châu, ĐN',         0,      380000),
+(5, 3,'2024-08-10 10:30','shipped',   N'Hoàn Kiếm, HN',        0,     1100000),
+(2, 4,'2024-08-18 16:00','delivered', N'Ba Đình, HN',           0,      650000),
+(6, 5,'2024-08-22 11:00','delivered', N'Q7, TP.HCM',           0,      420000),
+(8, 3,'2024-09-01 10:00','delivered', N'Cầu Giấy, HN',         100000, 980000),
+(10,4,'2024-09-10 14:30','shipped',   N'Q5, TP.HCM',           0,      730000),
+(12,5,'2024-09-15 09:45','confirmed', N'Đống Đa, HN',          0,      560000),
+(14,3,'2024-09-20 15:00','pending',   N'Long Biên, HN',         0,     1200000),
+(4, 4,'2024-09-25 11:30','delivered', N'Q3, TP.HCM',           50000,  890000);
 
 INSERT INTO OrderItems (order_id, variant_id, quantity, unit_price) VALUES
 (1,1,2,150000),(1,9,1,220000),
@@ -675,24 +651,24 @@ INSERT INTO OrderItems (order_id, variant_id, quantity, unit_price) VALUES
 
 -- PAYMENTS
 INSERT INTO Payments (order_id, payment_date, amount, method, status, transaction_ref) VALUES
-(1, '2024-01-15',520000, N'Tiền mặt',    'completed',NULL),
-(2, '2024-01-18',830000, N'Chuyển khoản','completed','TXN20240118'),
-(3, '2024-02-02',450000, N'Momo',        'completed','MM20240202'),
-(4, '2024-02-10',1200000,N'VNPay',       'completed','VP20240210'),
-(5, '2024-02-20',680000, N'Tiền mặt',    'completed',NULL),
-(6, '2024-03-05',350000, N'Chuyển khoản','completed','TXN20240305'),
-(7, '2024-03-12',590000, N'Momo',        'completed','MM20240312'),
-(8, '2024-03-22',960000, N'Thẻ',         'completed','CD20240322'),
-(9, '2024-04-01',415000, N'Tiền mặt',    'completed',NULL),
-(10,'2024-04-08',780000, N'VNPay',       'completed','VP20240408'),
-(12,'2024-05-02',1050000,N'Chuyển khoản','completed','TXN20240502'),
-(13,'2024-05-10',460000, N'Momo',        'completed','MM20240510'),
-(14,'2024-05-18',1350000,N'Thẻ',         'completed','CD20240518'),
-(15,'2024-06-03',320000, N'Tiền mặt',    'completed',NULL),
-(24,'2024-08-18',650000, N'Chuyển khoản','completed','TXN20240818'),
-(25,'2024-08-22',420000, N'Momo',        'completed','MM20240822'),
-(26,'2024-09-01',980000, N'VNPay',       'completed','VP20240901'),
-(30,'2024-09-25',890000, N'Thẻ',         'completed','CD20240925');
+(1, '2024-01-15',520000, N'Tiền mặt',     'completed',NULL),
+(2, '2024-01-18',830000, N'Chuyển khoản', 'completed','TXN20240118'),
+(3, '2024-02-02',450000, N'Momo',          'completed','MM20240202'),
+(4, '2024-02-10',1200000,N'VNPay',         'completed','VP20240210'),
+(5, '2024-02-20',680000, N'Tiền mặt',     'completed',NULL),
+(6, '2024-03-05',350000, N'Chuyển khoản', 'completed','TXN20240305'),
+(7, '2024-03-12',590000, N'Momo',          'completed','MM20240312'),
+(8, '2024-03-22',960000, N'Thẻ',           'completed','CD20240322'),
+(9, '2024-04-01',415000, N'Tiền mặt',     'completed',NULL),
+(10,'2024-04-08',780000, N'VNPay',         'completed','VP20240408'),
+(12,'2024-05-02',1050000,N'Chuyển khoản', 'completed','TXN20240502'),
+(13,'2024-05-10',460000, N'Momo',          'completed','MM20240510'),
+(14,'2024-05-18',1350000,N'Thẻ',           'completed','CD20240518'),
+(15,'2024-06-03',320000, N'Tiền mặt',     'completed',NULL),
+(24,'2024-08-18',650000, N'Chuyển khoản', 'completed','TXN20240818'),
+(25,'2024-08-22',420000, N'Momo',          'completed','MM20240822'),
+(26,'2024-09-01',980000, N'VNPay',         'completed','VP20240901'),
+(30,'2024-09-25',890000, N'Thẻ',           'completed','CD20240925');
 GO
 
 -- =====================================================
@@ -708,10 +684,10 @@ SELECT p.product_id, p.product_name, b.brand_name, c.category_name,
        CASE WHEN i.quantity <= i.min_quantity THEN N'⚠ Sắp hết' ELSE N'✔ Còn hàng' END AS stock_status
 FROM Inventory i
 JOIN ProductVariants pv ON i.variant_id   = pv.variant_id
-JOIN Products p         ON pv.product_id  = p.product_id
-JOIN Brands b           ON p.brand_id     = b.brand_id
-JOIN Categories c       ON p.category_id  = c.category_id
-JOIN Warehouses w       ON i.warehouse_id = w.warehouse_id;
+JOIN Products       p  ON pv.product_id   = p.product_id
+JOIN Brands         b  ON p.brand_id      = b.brand_id
+JOIN Categories     c  ON p.category_id   = c.category_id
+JOIN Warehouses     w  ON i.warehouse_id  = w.warehouse_id;
 GO
 
 -- VIEW 2: Tồn kho thấp (cảnh báo)
@@ -720,24 +696,24 @@ SELECT p.product_name, pv.sku, pv.size, pv.color,
        w.warehouse_name, i.quantity, i.min_quantity,
        (i.min_quantity - i.quantity) AS shortage
 FROM Inventory i
-JOIN ProductVariants pv ON i.variant_id   = pv.variant_id
-JOIN Products p         ON pv.product_id  = p.product_id
-JOIN Warehouses w       ON i.warehouse_id = w.warehouse_id
+JOIN ProductVariants pv ON i.variant_id  = pv.variant_id
+JOIN Products       p  ON pv.product_id  = p.product_id
+JOIN Warehouses     w  ON i.warehouse_id = w.warehouse_id
 WHERE i.quantity <= i.min_quantity;
 GO
 
--- VIEW 3: Tổng tồn kho theo sản phẩm (gộp tất cả kho + biến thể)
+-- VIEW 3: Tổng tồn kho theo sản phẩm
 CREATE VIEW vw_TotalStockByProduct AS
 SELECT p.product_id, p.product_name, b.brand_name, c.category_name,
-       COUNT(DISTINCT pv.variant_id)      AS total_variants,
-       SUM(i.quantity)                    AS total_stock,
-       MIN(p.base_price)                  AS min_price,
+       COUNT(DISTINCT pv.variant_id) AS total_variants,
+       SUM(i.quantity)               AS total_stock,
+       MIN(p.base_price)             AS min_price,
        MAX(p.base_price + pv.extra_price) AS max_price
-FROM Products p
-JOIN Brands b           ON p.brand_id    = b.brand_id
-JOIN Categories c       ON p.category_id = c.category_id
+FROM Products    p
+JOIN Brands      b  ON p.brand_id     = b.brand_id
+JOIN Categories  c  ON p.category_id  = c.category_id
 JOIN ProductVariants pv ON pv.product_id = p.product_id
-LEFT JOIN Inventory i   ON i.variant_id  = pv.variant_id
+LEFT JOIN Inventory  i  ON i.variant_id  = pv.variant_id
 GROUP BY p.product_id, p.product_name, b.brand_name, c.category_name;
 GO
 
@@ -755,10 +731,11 @@ GO
 
 -- VIEW 5: Doanh thu theo tháng
 CREATE VIEW vw_MonthlyRevenue AS
-SELECT YEAR(o.order_date)   AS yr, MONTH(o.order_date) AS mo,
-       COUNT(o.order_id)    AS total_orders,
-       SUM(o.total_amount)  AS revenue,
-       AVG(o.total_amount)  AS avg_order_value,
+SELECT YEAR(o.order_date)  AS yr,
+       MONTH(o.order_date) AS mo,
+       COUNT(o.order_id)   AS total_orders,
+       SUM(o.total_amount) AS revenue,
+       AVG(o.total_amount) AS avg_order_value,
        COUNT(DISTINCT o.customer_id) AS unique_customers
 FROM Orders o
 WHERE o.status = 'delivered'
@@ -768,15 +745,15 @@ GO
 -- VIEW 6: Top sản phẩm bán chạy
 CREATE VIEW vw_TopSellingProducts AS
 SELECT p.product_id, p.product_name, b.brand_name, c.category_name,
-       SUM(oi.quantity)                 AS qty_sold,
+       SUM(oi.quantity)               AS qty_sold,
        SUM(oi.quantity * oi.unit_price) AS revenue,
-       COUNT(DISTINCT o.order_id)       AS order_count
+       COUNT(DISTINCT o.order_id)     AS order_count
 FROM OrderItems oi
-JOIN Orders o           ON oi.order_id   = o.order_id
+JOIN Orders         o  ON oi.order_id   = o.order_id
 JOIN ProductVariants pv ON oi.variant_id = pv.variant_id
-JOIN Products p         ON pv.product_id = p.product_id
-JOIN Brands b           ON p.brand_id    = b.brand_id
-JOIN Categories c       ON p.category_id = c.category_id
+JOIN Products       p  ON pv.product_id  = p.product_id
+JOIN Brands         b  ON p.brand_id     = b.brand_id
+JOIN Categories     c  ON p.category_id  = c.category_id
 WHERE o.status = 'delivered'
 GROUP BY p.product_id, p.product_name, b.brand_name, c.category_name;
 GO
@@ -790,24 +767,25 @@ SELECT o.order_id, o.order_date, o.status,
        oi.quantity, oi.unit_price,
        oi.quantity * oi.unit_price AS line_total,
        o.discount_amount, o.total_amount, o.shipping_address
-FROM Orders o
-JOIN Customers c        ON o.customer_id  = c.customer_id
-JOIN Users u            ON o.created_by   = u.user_id
-JOIN OrderItems oi      ON oi.order_id    = o.order_id
+FROM Orders      o
+JOIN Customers   c  ON o.customer_id = c.customer_id
+JOIN Users       u  ON o.created_by  = u.user_id
+JOIN OrderItems  oi ON oi.order_id   = o.order_id
 JOIN ProductVariants pv ON oi.variant_id  = pv.variant_id
-JOIN Products p         ON pv.product_id  = p.product_id;
+JOIN Products    p  ON pv.product_id  = p.product_id;
 GO
 
 -- VIEW 8: Khách hàng VIP
 CREATE VIEW vw_TopCustomers AS
 SELECT c.customer_id, c.full_name, c.email, c.phone, c.loyalty_points,
-       COUNT(o.order_id)   AS total_orders,
-       SUM(o.total_amount) AS total_spent,
-       MAX(o.order_date)   AS last_order_date,
+       COUNT(o.order_id)    AS total_orders,
+       SUM(o.total_amount)  AS total_spent,
+       MAX(o.order_date)    AS last_order_date,
        CASE
            WHEN SUM(o.total_amount) >= 5000000 THEN N'VIP Gold'
            WHEN SUM(o.total_amount) >= 2000000 THEN N'VIP Silver'
-           ELSE N'Regular' END AS customer_tier
+           ELSE N'Regular'
+       END AS customer_tier
 FROM Customers c
 LEFT JOIN Orders o ON c.customer_id = o.customer_id AND o.status = 'delivered'
 GROUP BY c.customer_id, c.full_name, c.email, c.phone, c.loyalty_points;
@@ -817,166 +795,225 @@ GO
 CREATE VIEW vw_UserPermissions AS
 SELECT u.user_id, u.full_name, u.email, u.is_active,
        r.role_name, p.module, p.action
-FROM Users u
-JOIN Roles r            ON u.role_id       = r.role_id
-JOIN RolePermissions rp ON r.role_id       = rp.role_id
-JOIN Permissions p      ON rp.permission_id = p.permission_id;
+FROM Users          u
+JOIN Roles          r  ON u.role_id      = r.role_id
+JOIN RolePermissions rp ON r.role_id     = rp.role_id
+JOIN Permissions    p  ON rp.permission_id = p.permission_id;
 GO
 
 -- VIEW 10: Thống kê nhập kho theo nhà cung cấp
 CREATE VIEW vw_SupplierStockSummary AS
 SELECT s.supplier_id, s.supplier_name, s.contact_person,
-       COUNT(DISTINCT sr.receipt_id)  AS total_receipts,
-       SUM(sri.quantity)              AS total_items_received,
-       SUM(sr.total_amount)           AS total_paid,
-       MAX(sr.receipt_date)           AS last_receipt_date
-FROM Suppliers s
-LEFT JOIN StockReceipts sr      ON s.supplier_id = sr.supplier_id
-LEFT JOIN StockReceiptItems sri ON sr.receipt_id = sri.receipt_id
+       COUNT(DISTINCT sr.receipt_id) AS total_receipts,
+       SUM(sri.quantity)             AS total_items_received,
+       SUM(sr.total_amount)          AS total_paid,
+       MAX(sr.receipt_date)          AS last_receipt_date
+FROM Suppliers       s
+LEFT JOIN StockReceipts     sr  ON s.supplier_id  = sr.supplier_id
+LEFT JOIN StockReceiptItems sri ON sr.receipt_id  = sri.receipt_id
 GROUP BY s.supplier_id, s.supplier_name, s.contact_person;
 GO
 
--- VIEW 11: [FIX v3] Soft delete — chỉ sản phẩm đang active
-CREATE VIEW vw_ActiveProducts AS
-    SELECT * FROM Products WHERE is_active = 1;
+-- =====================================================
+-- PHẦN 4: 10 FUNCTIONS
+-- =====================================================
+
+-- FN 1: Giá biến thể
+CREATE FUNCTION dbo.fn_GetVariantPrice(@variant_id INT)
+RETURNS DECIMAL(12,2)
+AS
+BEGIN
+    DECLARE @price DECIMAL(12,2);
+    SELECT @price = p.base_price + pv.extra_price
+    FROM ProductVariants pv
+    JOIN Products p ON pv.product_id = p.product_id
+    WHERE pv.variant_id = @variant_id;
+    RETURN ISNULL(@price, 0);
+END
 GO
 
--- VIEW 12: [FIX v3] Soft delete — chỉ khách hàng đang active
-CREATE VIEW vw_ActiveCustomers AS
-    SELECT * FROM Customers WHERE is_active = 1;
+-- FN 2: Tổng tồn kho của một variant
+CREATE FUNCTION dbo.fn_GetTotalStock(@variant_id INT)
+RETURNS INT
+AS
+BEGIN
+    DECLARE @qty INT;
+    SELECT @qty = SUM(quantity)
+    FROM Inventory
+    WHERE variant_id = @variant_id;
+    RETURN ISNULL(@qty, 0);
+END
+GO
+
+-- FN 3: Tổng chi tiêu của khách hàng
+CREATE FUNCTION dbo.fn_GetCustomerTotalSpend(@customer_id INT)
+RETURNS DECIMAL(14,2)
+AS
+BEGIN
+    DECLARE @total DECIMAL(14,2);
+    SELECT @total = SUM(total_amount)
+    FROM Orders
+    WHERE customer_id = @customer_id AND status = 'delivered';
+    RETURN ISNULL(@total, 0);
+END
+GO
+
+-- FN 4: Đếm số đơn hàng theo trạng thái
+CREATE FUNCTION dbo.fn_CountOrdersByStatus(@status NVARCHAR(30))
+RETURNS INT
+AS
+BEGIN
+    DECLARE @cnt INT;
+    SELECT @cnt = COUNT(*) FROM Orders WHERE status = @status;
+    RETURN ISNULL(@cnt, 0);
+END
+GO
+
+-- FN 5: Xếp hạng khách hàng
+CREATE FUNCTION dbo.fn_GetCustomerTier(@customer_id INT)
+RETURNS NVARCHAR(20)
+AS
+BEGIN
+    DECLARE @spent DECIMAL(14,2) = dbo.fn_GetCustomerTotalSpend(@customer_id);
+    RETURN CASE
+        WHEN @spent >= 5000000 THEN N'VIP Gold'
+        WHEN @spent >= 2000000 THEN N'VIP Silver'
+        ELSE N'Regular'
+    END;
+END
+GO
+
+-- FN 6: Doanh thu tháng/năm
+CREATE FUNCTION dbo.fn_GetMonthlyRevenue(@year INT, @month INT)
+RETURNS DECIMAL(14,2)
+AS
+BEGIN
+    DECLARE @rev DECIMAL(14,2);
+    SELECT @rev = SUM(total_amount)
+    FROM Orders
+    WHERE YEAR(order_date) = @year
+      AND MONTH(order_date) = @month
+      AND status = 'delivered';
+    RETURN ISNULL(@rev, 0);
+END
+GO
+
+-- FN 7: Kiểm tra tồn kho tại kho cụ thể
+CREATE FUNCTION dbo.fn_CheckStock(@variant_id INT, @warehouse_id INT)
+RETURNS INT
+AS
+BEGIN
+    DECLARE @qty INT;
+    SELECT @qty = quantity
+    FROM Inventory
+    WHERE variant_id = @variant_id AND warehouse_id = @warehouse_id;
+    RETURN ISNULL(@qty, 0);
+END
+GO
+
+-- FN 8: Tính discount theo loyalty points
+CREATE FUNCTION dbo.fn_CalcLoyaltyDiscount(@customer_id INT, @order_amount DECIMAL(12,2))
+RETURNS DECIMAL(12,2)
+AS
+BEGIN
+    DECLARE @points INT;
+    SELECT @points = loyalty_points FROM Customers WHERE customer_id = @customer_id;
+    RETURN CASE
+        WHEN @points >= 300 THEN @order_amount * 0.10
+        WHEN @points >= 100 THEN @order_amount * 0.05
+        ELSE 0
+    END;
+END
+GO
+
+-- FN 9: Số ngày kể từ đơn hàng cuối
+CREATE FUNCTION dbo.fn_DaysSinceLastOrder(@customer_id INT)
+RETURNS INT
+AS
+BEGIN
+    DECLARE @last DATETIME;
+    SELECT @last = MAX(order_date)
+    FROM Orders
+    WHERE customer_id = @customer_id AND status = 'delivered';
+    RETURN CASE WHEN @last IS NULL THEN -1 ELSE DATEDIFF(DAY, @last, GETDATE()) END;
+END
+GO
+
+-- FN 10: Tên đầy đủ SKU
+CREATE FUNCTION dbo.fn_GetSKUFullInfo(@sku VARCHAR(60))
+RETURNS NVARCHAR(300)
+AS
+BEGIN
+    DECLARE @info NVARCHAR(300);
+    SELECT @info = p.product_name + N' | ' + pv.size + N' | ' + pv.color
+    FROM ProductVariants pv
+    JOIN Products p ON pv.product_id = p.product_id
+    WHERE pv.sku = @sku;
+    RETURN ISNULL(@info, N'Không tìm thấy');
+END
 GO
 
 -- =====================================================
--- PHẦN 4: 10 STORED PROCEDURES
+-- PHẦN 5: 10 STORED PROCEDURES
 -- =====================================================
 
--- PROC 1: Tạo đơn hàng — FULL TRANSACTION + XML items + RESERVE stock
--- [FIX v3] UPDLOCK chống race condition, validate XML/discount, warehouse trong JOIN
+-- PROC 1: Tạo đơn hàng (RESERVE model)
 CREATE PROCEDURE sp_CreateOrder
     @customer_id      INT,
     @created_by       INT,
     @shipping_address NVARCHAR(300),
     @discount_amount  DECIMAL(12,2) = 0,
     @note             NVARCHAR(300) = NULL,
-    @items_xml        XML,               -- <items><i vid="1" qty="2"/></items>
-    @warehouse_id     INT          = 1,
+    @items_xml        XML,
+    @warehouse_id     INT = 1,
     @new_order_id     INT OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
     SET @new_order_id = NULL;
-
-    -- [FIX v3] Validate XML không rỗng trước khi mở transaction
-    IF @items_xml IS NULL
-       OR NOT EXISTS (SELECT 1 FROM @items_xml.nodes('/items/i') AS x(item))
-    BEGIN
-        RAISERROR(N'[sp_CreateOrder] Danh sách sản phẩm không được rỗng.', 16, 1);
-        RETURN;
-    END
-
-    -- [FIX v3] Validate discount không âm
-    IF @discount_amount < 0
-    BEGIN
-        RAISERROR(N'[sp_CreateOrder] Discount không được âm.', 16, 1);
-        RETURN;
-    END
-
-    -- [FIX v4-3] Validate warehouse_id tồn tại trước khi mở transaction
-    IF NOT EXISTS (SELECT 1 FROM Warehouses WHERE warehouse_id = @warehouse_id)
-    BEGIN
-        RAISERROR(N'[sp_CreateOrder] Kho hàng (warehouse_id=%d) không tồn tại.', 16, 1, @warehouse_id);
-        RETURN;
-    END
-
-    -- [FIX v4-4] SERIALIZABLE: ngăn phantom read, kết hợp với UPDLOCK để chống race condition hoàn toàn
-    SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
     BEGIN TRANSACTION;
     BEGIN TRY
-        -- Bước 1: Tạo đơn hàng (total = 0, tính lại ở bước 5; gắn warehouse_id)
-        INSERT INTO Orders (customer_id, created_by, shipping_address, discount_amount, total_amount, note, warehouse_id)
-        VALUES (@customer_id, @created_by, @shipping_address, @discount_amount, 0, @note, @warehouse_id);
+        INSERT INTO Orders (customer_id, created_by, shipping_address, discount_amount, total_amount, note)
+        VALUES (@customer_id, @created_by, @shipping_address, @discount_amount, 0, @note);
         SET @new_order_id = SCOPE_IDENTITY();
 
-        -- Bước 2: Parse XML → insert OrderItems
         INSERT INTO OrderItems (order_id, variant_id, quantity, unit_price)
         SELECT @new_order_id,
-               x.item.value('@vid', 'INT'),
-               x.item.value('@qty', 'INT'),
-               dbo.fn_GetVariantPrice(x.item.value('@vid', 'INT'))
+               x.item.value('@vid','INT'),
+               x.item.value('@qty','INT'),
+               dbo.fn_GetVariantPrice(x.item.value('@vid','INT'))
         FROM @items_xml.nodes('/items/i') AS x(item);
 
-        -- Bước 3: [FIX v3] LEFT JOIN — kiểm tra variant có record trong kho không
         IF EXISTS (
             SELECT 1
             FROM OrderItems oi
-            LEFT JOIN Inventory inv ON inv.variant_id  = oi.variant_id
-                                   AND inv.warehouse_id = @warehouse_id
-            WHERE oi.order_id      = @new_order_id
-              AND inv.inventory_id IS NULL
+            JOIN Inventory inv ON oi.variant_id = inv.variant_id AND inv.warehouse_id = @warehouse_id
+            WHERE oi.order_id = @new_order_id AND inv.quantity < oi.quantity
         )
         BEGIN
-            RAISERROR(N'[sp_CreateOrder] Một hoặc nhiều sản phẩm chưa có trong kho chỉ định.', 16, 1);
-        END
-
-        -- Bước 4: [FIX v3] UPDLOCK + ROWLOCK — lock dòng inventory trước khi kiểm tra số lượng
-        DECLARE @locked TABLE (inventory_id INT);
-        INSERT INTO @locked
-        SELECT inv.inventory_id
-        FROM Inventory inv WITH (UPDLOCK, ROWLOCK)
-        JOIN OrderItems oi ON inv.variant_id  = oi.variant_id    -- [FIX v3] warehouse trong JOIN
-                          AND inv.warehouse_id = @warehouse_id
-        WHERE oi.order_id = @new_order_id;
-
-        -- Kiểm tra đủ tồn kho
-        IF EXISTS (
-            SELECT 1
-            FROM OrderItems oi
-            JOIN Inventory inv ON inv.variant_id  = oi.variant_id
-                               AND inv.warehouse_id = @warehouse_id
-            WHERE oi.order_id   = @new_order_id
-              AND inv.quantity   < oi.quantity
-        )
-        BEGIN
-            RAISERROR(N'[sp_CreateOrder] Không đủ tồn kho cho một hoặc nhiều sản phẩm.', 16, 1);
-        END
-
-        -- Bước 5: Tính total_amount
-        DECLARE @subtotal DECIMAL(14,2);
-        SELECT @subtotal = SUM(quantity * unit_price)
-        FROM OrderItems WHERE order_id = @new_order_id;
-
-        -- [FIX v3] Chặn discount > subtotal → total âm
-        IF @discount_amount > @subtotal
-        BEGIN
-            RAISERROR(N'[sp_CreateOrder] Discount (%s) không được vượt tổng tiền hàng (%s).',
-                      16, 1,
-                      CAST(@discount_amount AS NVARCHAR),
-                      CAST(@subtotal        AS NVARCHAR));
+            RAISERROR(N'[sp_CreateOrder] Không đủ tồn kho.', 16, 1);
         END
 
         UPDATE Orders
-        SET total_amount = @subtotal - @discount_amount
+        SET total_amount = (
+            SELECT SUM(quantity * unit_price) FROM OrderItems WHERE order_id = @new_order_id
+        ) - @discount_amount
         WHERE order_id = @new_order_id;
 
-        -- Bước 6: RESERVE — trừ kho ngay khi đặt hàng để giữ hàng
-        -- [FIX v3] warehouse_id nằm trong JOIN (chặt hơn)
+        -- RESERVE: trừ kho ngay khi đặt
         UPDATE inv
         SET inv.quantity   -= oi.quantity,
             inv.updated_at  = GETDATE()
         FROM Inventory inv
-        JOIN OrderItems oi ON inv.variant_id  = oi.variant_id
-                          AND inv.warehouse_id = @warehouse_id
-        WHERE oi.order_id = @new_order_id;
+        JOIN OrderItems oi ON inv.variant_id = oi.variant_id
+        WHERE oi.order_id    = @new_order_id
+          AND inv.warehouse_id = @warehouse_id;
 
-        -- Bước 7: Đánh dấu đã reserve → trigger DeductOnDelivered sẽ bỏ qua đơn này
         UPDATE Orders SET is_stock_reserved = 1 WHERE order_id = @new_order_id;
 
-        -- Bước 8: Ghi audit log
         INSERT INTO AuditLog (table_name, action, record_id, detail)
-        VALUES ('Orders', 'INSERT', @new_order_id,
-                N'Tạo đơn hàng cho customer ' + CAST(@customer_id AS NVARCHAR) +
-                N' — kho ' + CAST(@warehouse_id AS NVARCHAR) +
-                N' — tổng ' + CAST(@subtotal - @discount_amount AS NVARCHAR));
+        VALUES ('Orders','INSERT',@new_order_id,
+                N'Tạo đơn hàng cho customer ' + CAST(@customer_id AS NVARCHAR));
 
         COMMIT TRANSACTION;
     END TRY
@@ -984,25 +1021,24 @@ BEGIN
         ROLLBACK TRANSACTION;
         SET @new_order_id = NULL;
         DECLARE @msg NVARCHAR(2048) = ERROR_MESSAGE();
-        DECLARE @sev INT            = ERROR_SEVERITY();
-        DECLARE @st  INT            = ERROR_STATE();
+        DECLARE @sev INT = ERROR_SEVERITY();
+        DECLARE @st  INT = ERROR_STATE();
         RAISERROR(@msg, @sev, @st);
     END CATCH
 END
 GO
 
--- PROC 2: Thêm sản phẩm vào đơn hàng & tự cập nhật total
+-- PROC 2: Thêm item vào đơn
 CREATE PROCEDURE sp_AddOrderItem
-    @order_id   INT,
+    @order_id  INT,
     @variant_id INT,
-    @quantity   INT
+    @quantity  INT
 AS
 BEGIN
     SET NOCOUNT ON;
     DECLARE @unit_price DECIMAL(12,2);
     SELECT @unit_price = p.base_price + pv.extra_price
-    FROM ProductVariants pv
-    JOIN Products p ON pv.product_id = p.product_id
+    FROM ProductVariants pv JOIN Products p ON pv.product_id = p.product_id
     WHERE pv.variant_id = @variant_id;
 
     INSERT INTO OrderItems (order_id, variant_id, quantity, unit_price)
@@ -1010,13 +1046,12 @@ BEGIN
 
     UPDATE Orders
     SET total_amount = (SELECT SUM(quantity * unit_price) FROM OrderItems WHERE order_id = @order_id)
-                      - discount_amount
+                     - discount_amount
     WHERE order_id = @order_id;
 END
 GO
 
--- PROC 3: Cập nhật trạng thái đơn hàng
--- [FIX v3] State machine + UPDLOCK chống race condition
+-- PROC 3: Cập nhật trạng thái đơn hàng (có guard delivered)
 CREATE PROCEDURE sp_UpdateOrderStatus
     @order_id   INT,
     @new_status NVARCHAR(30)
@@ -1026,60 +1061,26 @@ BEGIN
 
     IF @new_status NOT IN ('pending','confirmed','shipping','shipped','delivered','cancelled')
     BEGIN
-        RAISERROR(N'Trạng thái không hợp lệ.', 16, 1);
+        RAISERROR(N'Trạng thái không hợp lệ', 16, 1);
         RETURN;
     END
 
-    BEGIN TRANSACTION;
-    BEGIN TRY
-        -- [FIX v3] Lock dòng trước khi đọc — chống race condition
-        DECLARE @cur_status NVARCHAR(30);
-        SELECT @cur_status = status
-        FROM Orders WITH (UPDLOCK, ROWLOCK)
-        WHERE order_id = @order_id;
+    -- [FIX] Guard: không cho cancel đơn đã delivered
+    IF @new_status = 'cancelled'
+       AND EXISTS (
+           SELECT 1 FROM Orders
+           WHERE order_id = @order_id AND status = 'delivered'
+       )
+    BEGIN
+        RAISERROR(N'Không thể cancel đơn hàng đã giao thành công.', 16, 1);
+        RETURN;
+    END
 
-        IF @cur_status IS NULL
-        BEGIN
-            RAISERROR(N'Đơn hàng không tồn tại.', 16, 1);
-        END
-
-        -- [FIX v3] State machine:
-        --   pending   → confirmed | cancelled
-        --   confirmed → shipping  | cancelled
-        --   shipping  → shipped   | cancelled
-        --   shipped   → delivered | cancelled
-        --   delivered / cancelled → không đổi được
-        DECLARE @allowed BIT = 0;
-        IF @cur_status = 'pending'   AND @new_status IN ('confirmed','cancelled')  SET @allowed = 1;
-        IF @cur_status = 'confirmed' AND @new_status IN ('shipping','cancelled')   SET @allowed = 1;
-        IF @cur_status = 'shipping'  AND @new_status IN ('shipped','cancelled')    SET @allowed = 1;
-        IF @cur_status = 'shipped'   AND @new_status IN ('delivered','cancelled')  SET @allowed = 1;
-
-        IF @allowed = 0
-        BEGIN
-            RAISERROR(N'Chuyển trạng thái không hợp lệ: %s → %s', 16, 1,
-                      @cur_status, @new_status);
-        END
-
-        UPDATE Orders SET status = @new_status WHERE order_id = @order_id;
-
-        INSERT INTO AuditLog (table_name, action, record_id, detail)
-        VALUES ('Orders', 'UPDATE', @order_id,
-                N'Chuyển trạng thái: ' + @cur_status + N' → ' + @new_status);
-
-        COMMIT TRANSACTION;
-    END TRY
-    BEGIN CATCH
-        ROLLBACK TRANSACTION;
-        DECLARE @msg NVARCHAR(2048) = ERROR_MESSAGE();
-        DECLARE @sev INT            = ERROR_SEVERITY();
-        DECLARE @st  INT            = ERROR_STATE();
-        RAISERROR(@msg, @sev, @st);
-    END CATCH
+    UPDATE Orders SET status = @new_status WHERE order_id = @order_id;
 END
 GO
 
--- PROC 4: Nhập kho — FULL TRANSACTION (trigger trg_UpdateStockOnReceipt tự cập nhật Inventory)
+-- PROC 4: Nhập kho
 CREATE PROCEDURE sp_ReceiveStock
     @supplier_id  INT,
     @warehouse_id INT,
@@ -1091,13 +1092,10 @@ CREATE PROCEDURE sp_ReceiveStock
 AS
 BEGIN
     SET NOCOUNT ON;
-
     IF @quantity <= 0
     BEGIN
-        RAISERROR(N'[sp_ReceiveStock] Số lượng nhập phải > 0.', 16, 1);
-        RETURN;
+        RAISERROR(N'Số lượng nhập phải > 0.', 16, 1); RETURN;
     END
-
     BEGIN TRANSACTION;
     BEGIN TRY
         DECLARE @receipt_id INT;
@@ -1105,26 +1103,24 @@ BEGIN
         VALUES (@supplier_id, @warehouse_id, @created_by, @quantity * @unit_cost, @note);
         SET @receipt_id = SCOPE_IDENTITY();
 
-        -- trigger trg_UpdateStockOnReceipt sẽ tự cập nhật Inventory qua MERGE
         INSERT INTO StockReceiptItems (receipt_id, variant_id, quantity, unit_cost)
         VALUES (@receipt_id, @variant_id, @quantity, @unit_cost);
 
         INSERT INTO AuditLog (table_name, action, record_id, detail)
-        VALUES ('StockReceipts', 'INSERT', @receipt_id,
-                N'Nhập ' + CAST(@quantity AS NVARCHAR) + N' units variant ' +
-                CAST(@variant_id AS NVARCHAR) + N' vào kho ' + CAST(@warehouse_id AS NVARCHAR));
+        VALUES ('StockReceipts','INSERT',@receipt_id,
+                N'Nhập ' + CAST(@quantity AS NVARCHAR) + N' units variant '
+                + CAST(@variant_id AS NVARCHAR) + N' vào kho ' + CAST(@warehouse_id AS NVARCHAR));
 
         COMMIT TRANSACTION;
     END TRY
     BEGIN CATCH
         ROLLBACK TRANSACTION;
-        DECLARE @msg NVARCHAR(2048) = ERROR_MESSAGE();
-        RAISERROR(@msg, 16, 1);
+        RAISERROR(ERROR_MESSAGE(), 16, 1);
     END CATCH
 END
 GO
 
--- PROC 5: Tìm kiếm sản phẩm (keyword / category / brand / price range)
+-- PROC 5: Tìm kiếm sản phẩm
 CREATE PROCEDURE sp_SearchProducts
     @keyword     NVARCHAR(100) = NULL,
     @category_id INT           = NULL,
@@ -1137,13 +1133,13 @@ BEGIN
     SELECT p.product_id, p.product_name, b.brand_name, c.category_name,
            p.base_price, p.is_active
     FROM Products p
-    JOIN Brands b     ON p.brand_id    = b.brand_id
+    JOIN Brands     b ON p.brand_id    = b.brand_id
     JOIN Categories c ON p.category_id = c.category_id
     WHERE (@keyword     IS NULL OR p.product_name LIKE N'%' + @keyword + '%')
-      AND (@category_id IS NULL OR p.category_id  = @category_id)
-      AND (@brand_id    IS NULL OR p.brand_id      = @brand_id)
-      AND (@min_price   IS NULL OR p.base_price   >= @min_price)
-      AND (@max_price   IS NULL OR p.base_price   <= @max_price)
+      AND (@category_id IS NULL OR p.category_id = @category_id)
+      AND (@brand_id    IS NULL OR p.brand_id    = @brand_id)
+      AND (@min_price   IS NULL OR p.base_price >= @min_price)
+      AND (@max_price   IS NULL OR p.base_price <= @max_price)
       AND p.is_active = 1;
 END
 GO
@@ -1156,348 +1152,250 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SELECT CAST(o.order_date AS DATE) AS sale_date,
-           COUNT(o.order_id)          AS orders,
+           COUNT(o.order_id)          AS total_orders,
            SUM(o.total_amount)        AS revenue
     FROM Orders o
-    WHERE CAST(o.order_date AS DATE) BETWEEN @from_date AND @to_date
-      AND o.status = 'delivered'
+    WHERE o.status = 'delivered'
+      AND CAST(o.order_date AS DATE) BETWEEN @from_date AND @to_date
     GROUP BY CAST(o.order_date AS DATE)
     ORDER BY sale_date;
 END
 GO
 
--- PROC 7: Xuất kho thủ công — FULL TRANSACTION + set-based
-CREATE PROCEDURE sp_DeductInventory
-    @order_id     INT,
-    @warehouse_id INT = 1
+-- PROC 7: Cập nhật loyalty points sau khi đơn delivered
+CREATE PROCEDURE sp_UpdateLoyaltyPoints
+    @order_id INT
 AS
 BEGIN
     SET NOCOUNT ON;
+    DECLARE @customer_id INT, @amount DECIMAL(14,2), @pts INT;
+    SELECT @customer_id = customer_id, @amount = total_amount
+    FROM Orders WHERE order_id = @order_id AND status = 'delivered';
 
-    BEGIN TRANSACTION;
-    BEGIN TRY
-        IF EXISTS (
-            SELECT 1
-            FROM OrderItems oi
-            LEFT JOIN Inventory inv
-                ON oi.variant_id = inv.variant_id AND inv.warehouse_id = @warehouse_id
-            WHERE oi.order_id = @order_id
-              AND ISNULL(inv.quantity, 0) < oi.quantity
-        )
-        BEGIN
-            RAISERROR(N'[sp_DeductInventory] Không đủ tồn kho. Toàn bộ xuất kho bị huỷ.', 16, 1);
-        END
+    IF @customer_id IS NULL RETURN;
 
-        UPDATE inv
-        SET inv.quantity   -= oi.quantity,
-            inv.updated_at  = GETDATE()
-        FROM Inventory inv
-        JOIN OrderItems oi ON inv.variant_id   = oi.variant_id
-                          AND inv.warehouse_id = @warehouse_id
-        WHERE oi.order_id = @order_id;
+    SET @pts = CAST(@amount / 10000 AS INT);
+    UPDATE Customers SET loyalty_points = loyalty_points + @pts
+    WHERE customer_id = @customer_id;
 
-        IF EXISTS (SELECT 1 FROM Inventory WHERE warehouse_id = @warehouse_id AND quantity < 0)
-        BEGIN
-            RAISERROR(N'[sp_DeductInventory] Phát hiện tồn kho âm sau khi trừ — ROLLBACK.', 16, 1);
-        END
-
-        INSERT INTO AuditLog (table_name, action, record_id, detail)
-        VALUES ('Inventory', 'DEDUCT', @order_id,
-                N'Xuất kho thành công cho đơn ' + CAST(@order_id AS NVARCHAR));
-
-        COMMIT TRANSACTION;
-    END TRY
-    BEGIN CATCH
-        ROLLBACK TRANSACTION;
-        DECLARE @msg NVARCHAR(2048) = ERROR_MESSAGE();
-        RAISERROR(@msg, 16, 1);
-    END CATCH
+    INSERT INTO AuditLog (table_name, action, record_id, detail)
+    VALUES ('Customers','UPDATE',@customer_id,
+            N'Cộng ' + CAST(@pts AS NVARCHAR) + N' điểm loyalty từ đơn ' + CAST(@order_id AS NVARCHAR));
 END
 GO
 
--- PROC 8: Cộng điểm loyalty cho khách hàng
-CREATE PROCEDURE sp_AddLoyaltyPoints
-    @customer_id INT,
-    @order_id    INT
-AS
-BEGIN
-    SET NOCOUNT ON;
-    DECLARE @total  DECIMAL(14,2);
-    DECLARE @points INT;
-    SELECT @total = total_amount FROM Orders WHERE order_id = @order_id;
-    SET @points = CAST(@total / 10000 AS INT);
-    UPDATE Customers SET loyalty_points += @points WHERE customer_id = @customer_id;
-END
-GO
-
--- PROC 9: Báo cáo tồn kho thấp theo kho
-CREATE PROCEDURE sp_LowStockReport
+-- PROC 8: Lấy tồn kho thấp
+CREATE PROCEDURE sp_GetLowStockAlert
     @warehouse_id INT = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT p.product_name, pv.sku, pv.size, pv.color,
-           w.warehouse_name, i.quantity, i.min_quantity,
-           (i.min_quantity - i.quantity) AS need_to_restock
-    FROM Inventory i
-    JOIN ProductVariants pv ON i.variant_id   = pv.variant_id
-    JOIN Products p         ON pv.product_id  = p.product_id
-    JOIN Warehouses w       ON i.warehouse_id = w.warehouse_id
-    WHERE i.quantity <= i.min_quantity
-      AND (@warehouse_id IS NULL OR i.warehouse_id = @warehouse_id)
-    ORDER BY need_to_restock DESC;
+    SELECT * FROM vw_LowStockAlert
+    WHERE (@warehouse_id IS NULL OR warehouse_name IN (
+        SELECT warehouse_name FROM Warehouses WHERE warehouse_id = @warehouse_id
+    ))
+    ORDER BY shortage DESC;
 END
 GO
 
--- PROC 10: Thêm sản phẩm mới
-CREATE PROCEDURE sp_AddProductWithVariants
-    @category_id    INT,
-    @brand_id       INT,
-    @product_name   NVARCHAR(200),
-    @base_price     DECIMAL(12,2),
-    @description    NVARCHAR(MAX) = NULL,
-    @new_product_id INT OUTPUT
+-- PROC 9: Tạo khách hàng mới
+CREATE PROCEDURE sp_CreateCustomer
+    @full_name NVARCHAR(100),
+    @email     NVARCHAR(100) = NULL,
+    @phone     VARCHAR(15)   = NULL,
+    @address   NVARCHAR(300) = NULL,
+    @gender    NVARCHAR(10)  = NULL,
+    @birthday  DATE          = NULL,
+    @new_id    INT OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
-    INSERT INTO Products (category_id, brand_id, product_name, base_price, description)
-    VALUES (@category_id, @brand_id, @product_name, @base_price, @description);
-    SET @new_product_id = SCOPE_IDENTITY();
+    INSERT INTO Customers (full_name, email, phone, address, gender, birthday)
+    VALUES (@full_name, @email, @phone, @address, @gender, @birthday);
+    SET @new_id = SCOPE_IDENTITY();
+END
+GO
+
+-- PROC 10: Dashboard tổng quan
+CREATE PROCEDURE sp_GetDashboard
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT
+        (SELECT COUNT(*) FROM Orders WHERE status = 'pending')    AS pending_orders,
+        (SELECT COUNT(*) FROM Orders WHERE status = 'shipping')   AS shipping_orders,
+        (SELECT COUNT(*) FROM Orders WHERE status = 'delivered'
+            AND CAST(order_date AS DATE) = CAST(GETDATE() AS DATE)) AS delivered_today,
+        (SELECT SUM(total_amount) FROM Orders WHERE status = 'delivered'
+            AND YEAR(order_date) = YEAR(GETDATE())
+            AND MONTH(order_date) = MONTH(GETDATE()))              AS revenue_this_month,
+        (SELECT COUNT(*) FROM vw_LowStockAlert)                   AS low_stock_alerts,
+        (SELECT COUNT(*) FROM Customers)                          AS total_customers;
 END
 GO
 
 -- =====================================================
--- PHẦN 5: 10 FUNCTIONS
+-- PHẦN 6: 12 TRIGGERS
 -- =====================================================
 
--- FUNC 1: Tổng tồn kho của 1 variant (tất cả kho)
-CREATE FUNCTION fn_GetTotalStock(@variant_id INT)
-RETURNS INT AS
+-- TRIGGER 1: Cập nhật Inventory khi nhập kho
+CREATE TRIGGER trg_UpdateStockOnReceipt
+ON StockReceiptItems
+AFTER INSERT
+AS
 BEGIN
-    RETURN ISNULL((SELECT SUM(quantity) FROM Inventory WHERE variant_id = @variant_id), 0);
+    SET NOCOUNT ON;
+    MERGE Inventory AS inv
+    USING (
+        SELECT i.variant_id, sr.warehouse_id, i.quantity
+        FROM inserted i
+        JOIN StockReceipts sr ON i.receipt_id = sr.receipt_id
+    ) AS src ON inv.variant_id = src.variant_id AND inv.warehouse_id = src.warehouse_id
+    WHEN MATCHED THEN
+        UPDATE SET inv.quantity = inv.quantity + src.quantity, inv.updated_at = GETDATE()
+    WHEN NOT MATCHED THEN
+        INSERT (variant_id, warehouse_id, quantity) VALUES (src.variant_id, src.warehouse_id, src.quantity);
 END
 GO
 
--- FUNC 2: Giá bán thực tế của 1 variant (base + extra)
-CREATE FUNCTION fn_GetVariantPrice(@variant_id INT)
-RETURNS DECIMAL(12,2) AS
-BEGIN
-    DECLARE @price DECIMAL(12,2);
-    SELECT @price = p.base_price + pv.extra_price
-    FROM ProductVariants pv
-    JOIN Products p ON pv.product_id = p.product_id
-    WHERE pv.variant_id = @variant_id;
-    RETURN ISNULL(@price, 0);
-END
-GO
-
--- FUNC 3: Tổng chi tiêu của 1 khách hàng
-CREATE FUNCTION fn_GetCustomerTotalSpent(@customer_id INT)
-RETURNS DECIMAL(14,2) AS
-BEGIN
-    RETURN ISNULL((
-        SELECT SUM(total_amount) FROM Orders
-        WHERE customer_id = @customer_id AND status = 'delivered'
-    ), 0);
-END
-GO
-
--- FUNC 4: Xếp loại khách hàng (gọi fn_GetCustomerTotalSpent)
-CREATE FUNCTION fn_GetCustomerTier(@customer_id INT)
-RETURNS NVARCHAR(20) AS
-BEGIN
-    DECLARE @spent DECIMAL(14,2) = dbo.fn_GetCustomerTotalSpent(@customer_id);
-    RETURN CASE
-        WHEN @spent >= 5000000 THEN N'VIP Gold'
-        WHEN @spent >= 2000000 THEN N'VIP Silver'
-        WHEN @spent >= 500000  THEN N'Regular'
-        ELSE N'New'
-    END;
-END
-GO
-
--- FUNC 5: Tính điểm loyalty từ 1 đơn hàng
-CREATE FUNCTION fn_CalcLoyaltyPoints(@order_amount DECIMAL(14,2))
-RETURNS INT AS
-BEGIN
-    RETURN CAST(@order_amount / 10000 AS INT);
-END
-GO
-
--- FUNC 6: Kiểm tra còn hàng trong kho chỉ định
-CREATE FUNCTION fn_IsInStock(@variant_id INT, @warehouse_id INT, @qty_needed INT)
-RETURNS BIT AS
-BEGIN
-    DECLARE @stock INT;
-    SELECT @stock = quantity FROM Inventory
-    WHERE variant_id = @variant_id AND warehouse_id = @warehouse_id;
-    RETURN CASE WHEN ISNULL(@stock, 0) >= @qty_needed THEN 1 ELSE 0 END;
-END
-GO
-
--- FUNC 7: Tên đầy đủ biến thể (product + size + màu)
-CREATE FUNCTION fn_GetVariantFullName(@variant_id INT)
-RETURNS NVARCHAR(300) AS
-BEGIN
-    DECLARE @name NVARCHAR(300);
-    SELECT @name = p.product_name + N' - ' + ISNULL(pv.size,'') + N' / ' + ISNULL(pv.color,'')
-    FROM ProductVariants pv
-    JOIN Products p ON pv.product_id = p.product_id
-    WHERE pv.variant_id = @variant_id;
-    RETURN ISNULL(@name, N'Không tìm thấy');
-END
-GO
-
--- FUNC 8: Doanh thu theo tháng/năm
-CREATE FUNCTION fn_GetMonthlyRevenue(@year INT, @month INT)
-RETURNS DECIMAL(14,2) AS
-BEGIN
-    RETURN ISNULL((
-        SELECT SUM(total_amount) FROM Orders
-        WHERE YEAR(order_date) = @year AND MONTH(order_date) = @month
-          AND status = 'delivered'
-    ), 0);
-END
-GO
-
--- FUNC 9: Đếm số biến thể của 1 sản phẩm
-CREATE FUNCTION fn_CountVariants(@product_id INT)
-RETURNS INT AS
-BEGIN
-    RETURN ISNULL((SELECT COUNT(*) FROM ProductVariants WHERE product_id = @product_id), 0);
-END
-GO
-
--- FUNC 10: Format tiền VNĐ thành chuỗi
-CREATE FUNCTION fn_FormatVND(@amount DECIMAL(14,2))
-RETURNS NVARCHAR(50) AS
-BEGIN
-    RETURN FORMAT(@amount, N'#,##0') + N' đ';
-END
-GO
-
--- =====================================================
--- PHẦN 6: TRIGGERS
--- =====================================================
-
--- TRIGGER 1: Trừ kho khi đơn → 'delivered'
--- [FIX v3] Dùng i.warehouse_id thay vì hardcode = 1
--- [FIX v4-1] KHÓA CỨNG double-deduct:
---   • is_stock_reserved = 1  → sp_CreateOrder đã trừ kho lúc đặt → SKIP hoàn toàn
---   • is_stock_reserved = 0  → đơn tạo tay / import cũ → trigger mới trừ
---   Điều kiện này là HARD GATE, không có ngoại lệ.
+-- TRIGGER 2: Trừ kho khi delivered (chỉ áp dụng khi chưa reserve)
 CREATE TRIGGER trg_DeductStockOnDelivered
-ON Orders AFTER UPDATE
+ON Orders
+AFTER UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
-
-    -- HARD GATE: thoát ngay nếu không có đơn nào đủ điều kiện
-    -- Chỉ xử lý đơn: (1) vừa chuyển sang delivered VÀ (2) chưa reserve kho
     IF NOT EXISTS (
         SELECT 1 FROM inserted i JOIN deleted d ON i.order_id = d.order_id
         WHERE i.status = 'delivered' AND d.status <> 'delivered'
-          AND i.is_stock_reserved = 0   -- [FIX v4-1] đã reserve → bỏ qua, không trừ nữa
     ) RETURN;
 
-    -- Kiểm tra tồn kho trước khi trừ
-    IF EXISTS (
-        SELECT 1
-        FROM Inventory inv
-        JOIN OrderItems oi ON inv.variant_id  = oi.variant_id
-        JOIN inserted   i  ON oi.order_id     = i.order_id
-        JOIN deleted    d  ON i.order_id      = d.order_id
-        WHERE i.status            = 'delivered'
-          AND d.status            <> 'delivered'
-          AND i.is_stock_reserved = 0
-          AND inv.warehouse_id    = i.warehouse_id
-          AND inv.quantity        < oi.quantity
-    )
-    BEGIN
-        RAISERROR(N'[TRIGGER] Tồn kho không đủ — không thể giao hàng.', 16, 1);
-        ROLLBACK TRANSACTION;
-        RETURN;
-    END
-
-    -- [FIX v5-1] Trừ kho theo aggregate — an toàn khi batch update nhiều orders cùng lúc
-    -- GROUP BY (variant_id, warehouse_id) tránh trừ sai do join nhân bản dòng
-    ;WITH deduct AS (
-        SELECT oi.variant_id,
-               i.warehouse_id,
-               SUM(oi.quantity) AS total_qty   -- gom toàn bộ quantity cùng variant+kho
-        FROM OrderItems oi
-        JOIN inserted i ON oi.order_id  = i.order_id
-        JOIN deleted  d ON i.order_id   = d.order_id
-        WHERE i.status            = 'delivered'
-          AND d.status            <> 'delivered'
-          AND i.is_stock_reserved = 0
-        GROUP BY oi.variant_id, i.warehouse_id
-    )
+    -- Chỉ trừ kho nếu chưa reserve (tránh double-deduct)
     UPDATE inv
-    SET inv.quantity   -= d.total_qty,
-        inv.updated_at  = GETDATE()
-    FROM Inventory inv
-    JOIN deduct d ON inv.variant_id   = d.variant_id
-                 AND inv.warehouse_id  = d.warehouse_id;
+    SET inv.quantity  -= oi.quantity,
+        inv.updated_at = GETDATE()
+    FROM Inventory   inv
+    JOIN OrderItems  oi ON inv.variant_id  = oi.variant_id
+    JOIN inserted    i  ON oi.order_id     = i.order_id
+    JOIN Warehouses  w  ON inv.warehouse_id = w.warehouse_id
+    WHERE i.status            = 'delivered'
+      AND i.is_stock_reserved = 0;  -- chỉ trừ nếu chưa reserve
+END
+GO
 
+-- TRIGGER 3: Hoàn kho khi cancel
+-- [FIX v3] Chỉ hoàn kho khi is_stock_reserved = 1
+-- Nếu đơn pending chưa reserve → bỏ qua, không cộng sai
+CREATE TRIGGER trg_RestoreStockOnCancel
+ON Orders
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- ① Chỉ fire khi thực sự chuyển sang 'cancelled'
+    IF NOT EXISTS (
+        SELECT 1
+        FROM inserted i
+        JOIN deleted  d ON i.order_id = d.order_id
+        WHERE i.status = 'cancelled'
+          AND d.status <> 'cancelled'
+    ) RETURN;
+
+    -- ② KEY FIX: chỉ hoàn kho nếu kho đã bị reserve trước đó
+    UPDATE inv
+    SET inv.quantity   = inv.quantity + oi.quantity,
+        inv.updated_at = GETDATE()
+    FROM Inventory   inv
+    JOIN OrderItems  oi ON inv.variant_id  = oi.variant_id
+    JOIN inserted    i  ON oi.order_id     = i.order_id
+    WHERE i.status            = 'cancelled'
+      AND i.is_stock_reserved = 1;  -- ← CHỈ HOÀN KHI ĐÃ RESERVE
+
+    -- ③ Reset cờ reserve về 0
+    UPDATE o
+    SET o.is_stock_reserved = 0
+    FROM Orders   o
+    JOIN inserted i ON o.order_id = i.order_id
+    WHERE i.status = 'cancelled';
+
+    -- ④ Audit log rõ ràng
     INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Orders', 'STOCK_DEDUCT', i.order_id,
-           N'Trừ kho ' + CAST(i.warehouse_id AS NVARCHAR) +
-           N' khi đơn ' + CAST(i.order_id AS NVARCHAR) + N' delivered'
-    FROM inserted i JOIN deleted d ON i.order_id = d.order_id
-    WHERE i.status = 'delivered' AND d.status <> 'delivered'
-      AND i.is_stock_reserved = 0;
+    SELECT 'Orders', 'CANCEL', i.order_id,
+           CASE i.is_stock_reserved
+               WHEN 1 THEN N'Cancel + hoàn kho thành công (reserve=1)'
+               ELSE        N'Cancel nhưng chưa reserve — bỏ qua hoàn kho'
+           END
+    FROM inserted i
+    WHERE i.status = 'cancelled';
 END
 GO
 
--- TRIGGER 2: Cộng điểm loyalty khi đơn → 'delivered'
-CREATE TRIGGER trg_AddLoyaltyOnDelivered
-ON Orders AFTER UPDATE
+-- TRIGGER 4: Audit log khi tạo đơn
+CREATE TRIGGER trg_AuditOrderInsert
+ON Orders
+AFTER INSERT
 AS
 BEGIN
     SET NOCOUNT ON;
-    UPDATE c
-    SET c.loyalty_points += dbo.fn_CalcLoyaltyPoints(i.total_amount)
-    FROM Customers c
-    JOIN inserted i ON c.customer_id = i.customer_id
-    JOIN deleted  d ON i.order_id    = d.order_id
-    WHERE i.status = 'delivered' AND d.status <> 'delivered';
+    INSERT INTO AuditLog (table_name, action, record_id, detail)
+    SELECT 'Orders', 'INSERT', order_id,
+           N'Đơn mới | Customer: ' + CAST(customer_id AS NVARCHAR)
+           + N' | Total: ' + CAST(total_amount AS NVARCHAR)
+    FROM inserted;
 END
 GO
 
--- TRIGGER 3: Tăng tồn kho khi nhập phiếu — dùng MERGE, validate quantity > 0
-CREATE TRIGGER trg_UpdateStockOnReceipt
-ON StockReceiptItems AFTER INSERT
+-- TRIGGER 5: Audit log khi cập nhật đơn
+CREATE TRIGGER trg_AuditOrderUpdate
+ON Orders
+AFTER UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
+    IF UPDATE(status)
+        INSERT INTO AuditLog (table_name, action, record_id, detail)
+        SELECT 'Orders', 'UPDATE', i.order_id,
+               N'Status: ' + d.status + N' → ' + i.status
+        FROM inserted i JOIN deleted d ON i.order_id = d.order_id
+        WHERE i.status <> d.status;
+END
+GO
 
-    IF EXISTS (SELECT 1 FROM inserted WHERE quantity <= 0)
+-- TRIGGER 6: Ngăn xóa đơn đã delivered
+CREATE TRIGGER trg_PreventDeleteDeliveredOrder
+ON Orders
+INSTEAD OF DELETE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM deleted WHERE status = 'delivered')
     BEGIN
-        RAISERROR(N'[TRIGGER] Số lượng nhập kho phải > 0.', 16, 1);
-        ROLLBACK TRANSACTION;
+        RAISERROR(N'Không thể xóa đơn hàng đã giao thành công.', 16, 1);
         RETURN;
     END
-
-    MERGE Inventory AS tgt
-    USING (
-        SELECT sri.variant_id, sr.warehouse_id, SUM(sri.quantity) AS qty
-        FROM inserted sri
-        JOIN StockReceipts sr ON sri.receipt_id = sr.receipt_id
-        GROUP BY sri.variant_id, sr.warehouse_id
-    ) AS src
-    ON tgt.variant_id = src.variant_id AND tgt.warehouse_id = src.warehouse_id
-    WHEN MATCHED THEN
-        UPDATE SET tgt.quantity += src.qty, tgt.updated_at = GETDATE()
-    WHEN NOT MATCHED THEN
-        INSERT (variant_id, warehouse_id, quantity, min_quantity)
-        VALUES (src.variant_id, src.warehouse_id, src.qty, 5);
+    DELETE FROM Orders WHERE order_id IN (SELECT order_id FROM deleted);
 END
 GO
 
--- TRIGGER 4: Ghi log khi xóa sản phẩm
-CREATE TRIGGER trg_LogProductDelete
-ON Products AFTER DELETE
+-- TRIGGER 7: Cập nhật updated_at Inventory
+CREATE TRIGGER trg_InventoryUpdatedAt
+ON Inventory
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE inv
+    SET inv.updated_at = GETDATE()
+    FROM Inventory inv
+    JOIN inserted  i ON inv.inventory_id = i.inventory_id;
+END
+GO
+
+-- TRIGGER 8: Audit khi xóa sản phẩm
+CREATE TRIGGER trg_AuditProductDelete
+ON Products
+AFTER DELETE
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -1507,393 +1405,104 @@ BEGIN
 END
 GO
 
--- TRIGGER 5: Ngăn xóa sản phẩm còn tồn kho (INSTEAD OF DELETE)
-CREATE TRIGGER trg_PreventDeleteStockedProduct
-ON Products INSTEAD OF DELETE
+-- TRIGGER 9: Ngăn xóa variant còn tồn kho
+CREATE TRIGGER trg_PreventDeleteVariantWithStock
+ON ProductVariants
+INSTEAD OF DELETE
 AS
 BEGIN
     SET NOCOUNT ON;
     IF EXISTS (
         SELECT 1 FROM Inventory i
-        JOIN ProductVariants pv ON i.variant_id  = pv.variant_id
-        JOIN deleted d          ON pv.product_id = d.product_id
+        JOIN deleted d ON i.variant_id = d.variant_id
         WHERE i.quantity > 0
     )
     BEGIN
-        RAISERROR(N'[TRIGGER] Không thể xóa sản phẩm còn tồn kho > 0.', 16, 1);
-        ROLLBACK TRANSACTION;
+        RAISERROR(N'Không thể xóa biến thể còn tồn kho.', 16, 1);
         RETURN;
     END
-    DELETE FROM Products WHERE product_id IN (SELECT product_id FROM deleted);
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Products', 'DELETE', product_id, N'Xóa sản phẩm: ' + product_name FROM deleted;
+    DELETE FROM ProductVariants WHERE variant_id IN (SELECT variant_id FROM deleted);
 END
 GO
 
--- TRIGGER 6: Hoàn lại tồn kho khi đơn bị CANCEL
--- [FIX v3] Chỉ hoàn khi is_stock_reserved = 1; dùng i.warehouse_id (không hardcode)
--- [FIX v4-2] Chặn hoàn kho khi cancel sau delivered:
---   delivered → cancelled là trạng thái KHÔNG hợp lệ (state machine đã chặn ở sp_UpdateOrderStatus)
---   Nhưng phòng thủ thêm tại trigger: chỉ hoàn kho khi trạng thái trước (d.status)
---   KHÔNG phải 'delivered' — tránh trường hợp hack bypass state machine
-CREATE TRIGGER trg_RestoreStockOnCancel
-ON Orders AFTER UPDATE
+-- TRIGGER 10: Tự động cộng loyalty points khi delivered
+CREATE TRIGGER trg_AddLoyaltyPointsOnDelivered
+ON Orders
+AFTER UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
-
     IF NOT EXISTS (
         SELECT 1 FROM inserted i JOIN deleted d ON i.order_id = d.order_id
-        WHERE i.status = 'cancelled' AND d.status <> 'cancelled'
+        WHERE i.status = 'delivered' AND d.status <> 'delivered'
     ) RETURN;
 
-    -- [FIX v4-2] Chặn hoàn kho nếu đơn trước đó đã 'delivered'
-    --   → tránh trường hợp ai đó bypass state machine, force-update status
-    IF EXISTS (
-        SELECT 1 FROM inserted i JOIN deleted d ON i.order_id = d.order_id
-        WHERE i.status = 'cancelled' AND d.status = 'delivered'
-    )
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR(N'[TRIGGER] Không thể huỷ đơn hàng đã giao (delivered).', 16, 1);
-        RETURN;
-    END
+    UPDATE c
+    SET c.loyalty_points = c.loyalty_points + CAST(i.total_amount / 10000 AS INT)
+    FROM Customers c
+    JOIN inserted  i ON c.customer_id = i.customer_id
+    WHERE i.status = 'delivered';
+END
+GO
 
-    -- [FIX v3] AND i.is_stock_reserved = 1 — không hoàn kho nếu chưa từng reserve
+-- TRIGGER 11: Validate giá trước khi insert/update OrderItems
+CREATE TRIGGER trg_ValidateOrderItemPrice
+ON OrderItems
+AFTER INSERT, UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF EXISTS (SELECT 1 FROM inserted WHERE unit_price <= 0)
+    BEGIN
+        RAISERROR(N'Đơn giá sản phẩm phải > 0.', 16, 1);
+        ROLLBACK TRANSACTION;
+    END
+END
+GO
+
+-- TRIGGER 12: INSTEAD OF UPDATE trên vw_InventoryByWarehouse
+CREATE TRIGGER trg_InsteadOfUpdateInventoryView
+ON vw_InventoryByWarehouse
+INSTEAD OF UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
     UPDATE inv
-    SET inv.quantity   += oi.quantity,
-        inv.updated_at  = GETDATE()
+    SET inv.quantity     = i.quantity,
+        inv.min_quantity = i.min_quantity,
+        inv.updated_at   = GETDATE()
     FROM Inventory inv
-    JOIN OrderItems oi ON inv.variant_id   = oi.variant_id
-    JOIN inserted   i  ON oi.order_id      = i.order_id
-    JOIN deleted    d  ON i.order_id       = d.order_id
-    WHERE i.status             = 'cancelled'
-      AND d.status             <> 'cancelled'
-      AND d.status             <> 'delivered'   -- [FIX v4-2] double-guard
-      AND i.is_stock_reserved  = 1              -- [FIX v3]
-      AND inv.warehouse_id     = i.warehouse_id; -- [FIX v3]
-
-    -- Reset cờ reserve dù hoàn hay không
-    UPDATE Orders SET is_stock_reserved = 0
-    WHERE order_id IN (
-        SELECT i.order_id FROM inserted i JOIN deleted d ON i.order_id = d.order_id
-        WHERE i.status = 'cancelled' AND d.status <> 'cancelled'
-    );
-
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Orders', 'STOCK_RESTORE', i.order_id,
-           CASE WHEN i.is_stock_reserved = 1
-                THEN N'Hoàn kho ' + CAST(i.warehouse_id AS NVARCHAR) +
-                     N' khi huỷ đơn ' + CAST(i.order_id AS NVARCHAR)
-                ELSE N'Huỷ đơn chưa reserve — không hoàn kho'
-           END
-    FROM inserted i JOIN deleted d ON i.order_id = d.order_id
-    WHERE i.status = 'cancelled' AND d.status <> 'cancelled';
-END
-GO
-
--- TRIGGER 7: Ghi log khi thay đổi Role của User
-CREATE TRIGGER trg_LogUserRoleChange
-ON Users AFTER UPDATE
-AS
-BEGIN
-    SET NOCOUNT ON;
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Users', 'UPDATE', i.user_id,
-           N'Role thay đổi từ ' + CAST(d.role_id AS NVARCHAR) +
-           N' → ' + CAST(i.role_id AS NVARCHAR)
-    FROM inserted i JOIN deleted d ON i.user_id = d.user_id
-    WHERE i.role_id <> d.role_id;
-END
-GO
-
--- TRIGGER 8: Ngăn cập nhật đơn hàng đã CANCELLED
--- [FIX v3] Chuyển từ INSTEAD OF → AFTER UPDATE + ROLLBACK (tránh side-effect mất cột)
-CREATE TRIGGER trg_PreventUpdateCancelledOrder
-ON Orders AFTER UPDATE
-AS
-BEGIN
-    SET NOCOUNT ON;
-    IF EXISTS (
-        SELECT 1
-        FROM deleted  d
-        JOIN inserted i ON d.order_id = i.order_id
-        WHERE d.status = 'cancelled'
-          AND i.status <> 'cancelled'
-    )
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR(N'[TRIGGER] Đơn hàng đã HUỶ — không thể cập nhật.', 16, 1);
-    END
-END
-GO
-
--- TRIGGER 9: Tự cập nhật total_amount khi sửa OrderItems — xử lý đúng batch
-CREATE TRIGGER trg_RecalcOrderTotal
-ON OrderItems AFTER INSERT, UPDATE, DELETE
-AS
-BEGIN
-    SET NOCOUNT ON;
-    ;WITH affected AS (
-        SELECT order_id FROM inserted
-        UNION
-        SELECT order_id FROM deleted
-    )
-    UPDATE o
-    SET o.total_amount = ISNULL(
-            (SELECT SUM(oi.quantity * oi.unit_price)
-             FROM OrderItems oi WHERE oi.order_id = o.order_id), 0)
-        - o.discount_amount
-    FROM Orders o
-    WHERE o.order_id IN (SELECT order_id FROM affected);
-END
-GO
-
--- TRIGGER 10: Ghi log khi thay đổi giá sản phẩm
-CREATE TRIGGER trg_LogPriceChange
-ON Products AFTER UPDATE
-AS
-BEGIN
-    SET NOCOUNT ON;
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Products', 'UPDATE', i.product_id,
-           N'Giá thay đổi: ' + dbo.fn_FormatVND(d.base_price) +
-           N' → ' + dbo.fn_FormatVND(i.base_price)
-    FROM inserted i JOIN deleted d ON i.product_id = d.product_id
-    WHERE i.base_price <> d.base_price;
-END
-GO
-
--- TRIGGER 11: Chặn tồn kho âm khi UPDATE trực tiếp vào Inventory
-CREATE TRIGGER trg_PreventNegativeInventory
-ON Inventory AFTER UPDATE
-AS
-BEGIN
-    SET NOCOUNT ON;
-    IF EXISTS (SELECT 1 FROM inserted WHERE quantity < 0)
-    BEGIN
-        RAISERROR(N'[TRIGGER] Vi phạm ACID: tồn kho không được âm.', 16, 1);
-        ROLLBACK TRANSACTION;
-        RETURN;
-    END
-END
-GO
-
--- TRIGGER 12: [FIX v3+v4] Ràng buộc tổng tiền thanh toán không vượt tổng đơn
--- [FIX v4-5] Chỉ check khi inserted.status = 'completed'
---   Nếu insert/update một payment với status = 'pending'/'failed' → không check
---   Tránh false-positive khi tạo payment chờ xác nhận
-CREATE TRIGGER trg_ValidatePaymentAmount
-ON Payments AFTER INSERT, UPDATE
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- [FIX v4-5] Thoát sớm nếu không có dòng nào trong inserted có status = 'completed'
-    --   → payment pending/failed/refunded không kích hoạt check tổng tiền
-    IF NOT EXISTS (SELECT 1 FROM inserted WHERE status = 'completed') RETURN;
-
-    -- [FIX v3] GROUP BY order_id — so sánh tổng 1 lần / order, chính xác & tối ưu
-    IF EXISTS (
-        SELECT 1
-        FROM (
-            SELECT p.order_id,
-                   SUM(p.amount)  AS total_paid,
-                   o.total_amount
-            FROM Payments p
-            JOIN Orders   o ON p.order_id = o.order_id
-            WHERE p.status    = 'completed'
-              AND p.order_id IN (SELECT order_id FROM inserted WHERE status = 'completed')
-            GROUP BY p.order_id, o.total_amount
-        ) agg
-        WHERE agg.total_paid > agg.total_amount
-    )
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR(N'[TRIGGER] Tổng tiền thanh toán vượt quá tổng tiền đơn hàng.', 16, 1);
-    END
-END
-GO
-
--- TRIGGER 13: [FIX v3] AuditLog cho OrderItems
-CREATE TRIGGER trg_AuditOrderItems
-ON OrderItems AFTER INSERT, UPDATE, DELETE
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'OrderItems', 'INSERT', i.item_id,
-           N'Thêm item: variant ' + CAST(i.variant_id AS NVARCHAR) +
-           N' x' + CAST(i.quantity AS NVARCHAR) +
-           N' vào order ' + CAST(i.order_id AS NVARCHAR)
-    FROM inserted i
-    WHERE NOT EXISTS (SELECT 1 FROM deleted d WHERE d.item_id = i.item_id);
-
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'OrderItems', 'UPDATE', i.item_id,
-           N'Sửa item order ' + CAST(i.order_id AS NVARCHAR) +
-           N': qty ' + CAST(d.quantity AS NVARCHAR) + N' → ' + CAST(i.quantity AS NVARCHAR)
-    FROM inserted i JOIN deleted d ON i.item_id = d.item_id;
-
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'OrderItems', 'DELETE', d.item_id,
-           N'Xoá item: variant ' + CAST(d.variant_id AS NVARCHAR) +
-           N' khỏi order ' + CAST(d.order_id AS NVARCHAR)
-    FROM deleted d
-    WHERE NOT EXISTS (SELECT 1 FROM inserted i WHERE i.item_id = d.item_id);
-END
-GO
-
--- TRIGGER 14: [FIX v3] AuditLog cho Payments
-CREATE TRIGGER trg_AuditPayments
-ON Payments AFTER INSERT, UPDATE, DELETE
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Payments', 'INSERT', i.payment_id,
-           N'Thanh toán ' + CAST(i.amount AS NVARCHAR) +
-           N' VND cho order ' + CAST(i.order_id AS NVARCHAR) +
-           N' — ' + ISNULL(i.method, 'N/A')
-    FROM inserted i
-    WHERE NOT EXISTS (SELECT 1 FROM deleted d WHERE d.payment_id = i.payment_id);
-
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Payments', 'UPDATE', i.payment_id,
-           N'Cập nhật payment order ' + CAST(i.order_id AS NVARCHAR) +
-           N': ' + CAST(d.amount AS NVARCHAR) + N' → ' + CAST(i.amount AS NVARCHAR) +
-           N', status: ' + d.status + N' → ' + i.status
-    FROM inserted i JOIN deleted d ON i.payment_id = d.payment_id;
-
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Payments', 'DELETE', d.payment_id,
-           N'Xoá payment ' + CAST(d.amount AS NVARCHAR) +
-           N' VND khỏi order ' + CAST(d.order_id AS NVARCHAR)
-    FROM deleted d
-    WHERE NOT EXISTS (SELECT 1 FROM inserted i WHERE i.payment_id = d.payment_id);
-END
-GO
-
--- TRIGGER 15: [FIX v5-3] Ngăn sửa/thêm/xoá OrderItems khi đơn đã reserve
--- Sau khi reserve kho, sửa quantity/items sẽ làm lệch tồn kho thực tế
-CREATE TRIGGER trg_PreventModifyOrderItemsWhenReserved
-ON OrderItems AFTER INSERT, UPDATE, DELETE
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Gom tất cả order_id bị ảnh hưởng
-    DECLARE @affected_orders TABLE (order_id INT);
-    INSERT INTO @affected_orders
-        SELECT order_id FROM inserted
-        UNION
-        SELECT order_id FROM deleted;
-
-    -- Nếu bất kỳ đơn nào đã reserve → ROLLBACK
-    IF EXISTS (
-        SELECT 1 FROM Orders o
-        JOIN @affected_orders a ON o.order_id = a.order_id
-        WHERE o.is_stock_reserved = 1
-          AND o.status NOT IN ('cancelled', 'delivered')  -- đơn đang active & đã reserve
-    )
-    BEGIN
-        ROLLBACK TRANSACTION;
-        RAISERROR(N'[TRIGGER] Không thể sửa/thêm/xoá sản phẩm trong đơn hàng đã giữ kho (reserved). Hãy huỷ đơn trước.', 16, 1);
-    END
-END
-GO
-
--- TRIGGER 16: [FIX v5-4] Ngăn xoá đơn hàng đã có payment
-CREATE TRIGGER trg_PreventDeleteOrderWithPayment
-ON Orders INSTEAD OF DELETE
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    -- Nếu đơn đang bị xoá đã có payment → từ chối
-    IF EXISTS (
-        SELECT 1 FROM Payments p
-        JOIN deleted d ON p.order_id = d.order_id
-    )
-    BEGIN
-        RAISERROR(N'[TRIGGER] Không thể xoá đơn hàng đã có thanh toán. Hãy refund trước.', 16, 1);
-        ROLLBACK TRANSACTION;
-        RETURN;
-    END
-
-    -- Xoá an toàn: không có payment
-    DELETE FROM Orders WHERE order_id IN (SELECT order_id FROM deleted);
-
-    INSERT INTO AuditLog (table_name, action, record_id, detail)
-    SELECT 'Orders', 'DELETE', order_id,
-           N'Xoá đơn hàng ' + CAST(order_id AS NVARCHAR) +
-           N' (status: ' + status + N')'
-    FROM deleted;
+    JOIN inserted  i ON inv.variant_id   = i.variant_id
+                    AND inv.warehouse_id = (
+                        SELECT warehouse_id FROM Warehouses WHERE warehouse_name = i.warehouse_name
+                    );
 END
 GO
 
 -- =====================================================
--- PHẦN 7: INDEXES (tối ưu hiệu năng truy vấn)
+-- PHẦN 7: 10 INDEXES
 -- =====================================================
 
+CREATE INDEX IX_Orders_CustomerId    ON Orders(customer_id);
 CREATE INDEX IX_Orders_Status        ON Orders(status);
-CREATE INDEX IX_Orders_Customer      ON Orders(customer_id);
-CREATE INDEX IX_Orders_Date          ON Orders(order_date);
-CREATE INDEX IX_Orders_Warehouse     ON Orders(warehouse_id);
-CREATE INDEX IX_OrderItems_Order     ON OrderItems(order_id);
-CREATE INDEX IX_OrderItems_Variant   ON OrderItems(variant_id);
-CREATE INDEX IX_Inventory_Variant    ON Inventory(variant_id);
-CREATE INDEX IX_Inventory_Warehouse  ON Inventory(warehouse_id);
-CREATE INDEX IX_Inventory_Variant_Warehouse ON Inventory(variant_id, warehouse_id); -- [FIX v5-6] composite
-CREATE INDEX IX_Payments_Order       ON Payments(order_id);                          -- [FIX v5-6]
-CREATE INDEX IX_Products_Category    ON Products(category_id);
-CREATE INDEX IX_Products_Brand       ON Products(brand_id);
-CREATE INDEX IX_ProductVariants_Prod ON ProductVariants(product_id);
+CREATE INDEX IX_Orders_OrderDate     ON Orders(order_date);
+CREATE INDEX IX_OrderItems_OrderId   ON OrderItems(order_id);
+CREATE INDEX IX_OrderItems_VariantId ON OrderItems(variant_id);
+CREATE INDEX IX_Inventory_VariantId  ON Inventory(variant_id);
+CREATE INDEX IX_Inventory_WarehouseId ON Inventory(warehouse_id);
+CREATE INDEX IX_Products_CategoryId  ON Products(category_id);
+CREATE INDEX IX_Products_BrandId     ON Products(brand_id);
+CREATE INDEX IX_ProductVariants_ProductId ON ProductVariants(product_id);
 GO
 
 -- =====================================================
 -- KIỂM TRA NHANH
 -- =====================================================
-PRINT N'';
-PRINT N'✅ ĐÃ TẠO XONG DATABASE ClothingStoreDB (FINAL v5 — HOÀN CHỈNH)';
-PRINT N'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
-PRINT N'  BẢNG    : 18 bảng (Orders + warehouse_id, Customers + is_active)';
-PRINT N'  VIEWS   : 12 views (+ vw_ActiveProducts, vw_ActiveCustomers)';
-PRINT N'  PROCS   : 10 stored procedures';
-PRINT N'  FUNCS   : 10 functions';
-PRINT N'  TRIGGERS: 16 triggers';
-PRINT N'  INDEXES : 13 indexes (+ composite Inventory, Payments_Order)';
-PRINT N'━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━';
-PRINT N'';
-PRINT N'-- DEMO TESTS (dán vào query window mới):';
-PRINT N'-- [1] Tạo đơn hàng:';
-PRINT N'-- DECLARE @oid INT;';
-PRINT N'-- EXEC sp_CreateOrder @customer_id=1, @created_by=3,';
-PRINT N'--   @shipping_address=N''Q1 TP.HCM'',';
-PRINT N'--   @items_xml=''<items><i vid="1" qty="2"/></items>'',';
-PRINT N'--   @warehouse_id=1, @new_order_id=@oid OUTPUT;';
-PRINT N'-- SELECT @oid AS new_order_id;';
-PRINT N'';
-PRINT N'-- [2] State machine (sẽ báo lỗi nếu nhảy cóc):';
-PRINT N'-- EXEC sp_UpdateOrderStatus @order_id=18, @new_status=''confirmed'';  -- OK';
-PRINT N'-- EXEC sp_UpdateOrderStatus @order_id=18, @new_status=''delivered'';  -- LỖI';
-PRINT N'';
-PRINT N'-- [3] Trigger bảo vệ:';
-PRINT N'-- UPDATE OrderItems SET quantity=99 WHERE order_id=1; -- LỖI: đơn đã reserve';
-PRINT N'-- DELETE FROM Orders WHERE order_id=1;                -- LỖI: đã có payment';
-PRINT N'';
-PRINT N'-- [4] Các view hữu ích:';
-PRINT N'-- SELECT * FROM vw_LowStockAlert      ORDER BY shortage DESC;';
-PRINT N'-- SELECT * FROM vw_TopCustomers        ORDER BY total_spent DESC;';
-PRINT N'-- SELECT * FROM vw_MonthlyRevenue      ORDER BY yr, mo;';
-PRINT N'-- SELECT * FROM vw_TopSellingProducts  ORDER BY qty_sold DESC;';
-PRINT N'-- SELECT * FROM AuditLog               ORDER BY changed_at DESC;';
-PRINT N'';
-PRINT N'-- [5] Functions:';
-PRINT N'-- SELECT dbo.fn_FormatVND(1500000);';
-PRINT N'-- SELECT dbo.fn_GetVariantFullName(1);';
-PRINT N'-- SELECT dbo.fn_GetCustomerTier(4);';
-PRINT N'-- SELECT dbo.fn_IsInStock(1, 1, 5);';
+
+SELECT 'Schema OK' AS result;
+SELECT COUNT(*) AS total_products   FROM Products;
+SELECT COUNT(*) AS total_variants   FROM ProductVariants;
+SELECT COUNT(*) AS total_inventory  FROM Inventory;
+SELECT COUNT(*) AS total_orders     FROM Orders;
+SELECT COUNT(*) AS total_customers  FROM Customers;
 GO
