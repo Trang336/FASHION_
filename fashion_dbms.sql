@@ -1,10 +1,10 @@
 -- =====================================================
 -- HỆ THỐNG QUẢN LÝ BÁN QUẦN ÁO
 -- SQL Server | Đồ án môn CSDL nâng cao
--- Bao gồm: Schema + Mock Data + 10 Views
---          + 10 Procedures + 10 Functions + 12 Triggers
---          + 10 Indexes
--- Phiên bản: FINAL v3 — fix toàn bộ 16 issues
+-- Bao gồm: Schema + Mock Data + 12 Views
+--          + 10 Procedures + 10 Functions + 14 Triggers
+--          + 11 Indexes
+-- Phiên bản: FINAL v4 — fix toàn bộ 21 issues
 -- Fixes v2:
 --   ✔ INSTEAD OF UPDATE trigger → AFTER + ROLLBACK
 --   ✔ sp_CreateOrder hỗ trợ @warehouse_id linh hoạt
@@ -25,6 +25,12 @@
 --   ✔ trg_ValidatePaymentAmount: GROUP BY đúng cách
 --   ✔ Soft delete: Customers.is_active + 2 views Active*
 --   ✔ AuditLog mở rộng: trg_AuditOrderItems + trg_AuditPayments
+-- Fixes v4 (21 issues tổng):
+--   ✔ (1) Double deduct khóa cứng: delivered không trừ nếu is_stock_reserved = 1
+--   ✔ (2) Cancel sau delivered bị chặn: trg_RestoreStockOnCancel check d.status <> 'delivered'
+--   ✔ (3) sp_CreateOrder kiểm tra warehouse_id tồn tại trong Warehouses
+--   ✔ (4) SERIALIZABLE isolation trong sp_CreateOrder & sp_UpdateOrderStatus
+--   ✔ (5) trg_ValidatePaymentAmount chỉ tính khi inserted.status = 'completed'
 -- =====================================================
 
 USE master;
@@ -875,6 +881,15 @@ BEGIN
         RETURN;
     END
 
+    -- [FIX v4-3] Validate warehouse_id tồn tại trước khi mở transaction
+    IF NOT EXISTS (SELECT 1 FROM Warehouses WHERE warehouse_id = @warehouse_id)
+    BEGIN
+        RAISERROR(N'[sp_CreateOrder] Kho hàng (warehouse_id=%d) không tồn tại.', 16, 1, @warehouse_id);
+        RETURN;
+    END
+
+    -- [FIX v4-4] SERIALIZABLE: ngăn phantom read, kết hợp với UPDLOCK để chống race condition hoàn toàn
+    SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
     BEGIN TRANSACTION;
     BEGIN TRY
         -- Bước 1: Tạo đơn hàng (total = 0, tính lại ở bước 5; gắn warehouse_id)
@@ -1367,28 +1382,36 @@ GO
 
 -- TRIGGER 1: Trừ kho khi đơn → 'delivered'
 -- [FIX v3] Dùng i.warehouse_id thay vì hardcode = 1
+-- [FIX v4-1] KHÓA CỨNG double-deduct:
+--   • is_stock_reserved = 1  → sp_CreateOrder đã trừ kho lúc đặt → SKIP hoàn toàn
+--   • is_stock_reserved = 0  → đơn tạo tay / import cũ → trigger mới trừ
+--   Điều kiện này là HARD GATE, không có ngoại lệ.
 CREATE TRIGGER trg_DeductStockOnDelivered
 ON Orders AFTER UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
 
+    -- HARD GATE: thoát ngay nếu không có đơn nào đủ điều kiện
+    -- Chỉ xử lý đơn: (1) vừa chuyển sang delivered VÀ (2) chưa reserve kho
     IF NOT EXISTS (
         SELECT 1 FROM inserted i JOIN deleted d ON i.order_id = d.order_id
         WHERE i.status = 'delivered' AND d.status <> 'delivered'
-          AND i.is_stock_reserved = 0
+          AND i.is_stock_reserved = 0   -- [FIX v4-1] đã reserve → bỏ qua, không trừ nữa
     ) RETURN;
 
+    -- Kiểm tra tồn kho trước khi trừ
     IF EXISTS (
         SELECT 1
         FROM Inventory inv
-        JOIN OrderItems oi ON inv.variant_id   = oi.variant_id
-                          AND inv.warehouse_id  = (SELECT warehouse_id FROM inserted ii WHERE ii.order_id = oi.order_id)
-        JOIN inserted   i  ON oi.order_id      = i.order_id
-        JOIN deleted    d  ON i.order_id       = d.order_id
-        WHERE i.status = 'delivered' AND d.status <> 'delivered'
+        JOIN OrderItems oi ON inv.variant_id  = oi.variant_id
+        JOIN inserted   i  ON oi.order_id     = i.order_id
+        JOIN deleted    d  ON i.order_id      = d.order_id
+        WHERE i.status            = 'delivered'
+          AND d.status            <> 'delivered'
           AND i.is_stock_reserved = 0
-          AND inv.quantity < oi.quantity
+          AND inv.warehouse_id    = i.warehouse_id
+          AND inv.quantity        < oi.quantity
     )
     BEGIN
         RAISERROR(N'[TRIGGER] Tồn kho không đủ — không thể giao hàng.', 16, 1);
@@ -1396,7 +1419,7 @@ BEGIN
         RETURN;
     END
 
-    -- [FIX v3] Trừ đúng kho của từng đơn
+    -- Trừ đúng kho của từng đơn (chỉ đơn chưa reserve)
     UPDATE inv
     SET inv.quantity   -= oi.quantity,
         inv.updated_at  = GETDATE()
@@ -1406,7 +1429,7 @@ BEGIN
     JOIN deleted    d  ON i.order_id       = d.order_id
     WHERE i.status             = 'delivered'
       AND d.status             <> 'delivered'
-      AND i.is_stock_reserved  = 0
+      AND i.is_stock_reserved  = 0          -- [FIX v4-1] HARD GATE
       AND inv.warehouse_id     = i.warehouse_id;
 
     INSERT INTO AuditLog (table_name, action, record_id, detail)
@@ -1501,6 +1524,10 @@ GO
 
 -- TRIGGER 6: Hoàn lại tồn kho khi đơn bị CANCEL
 -- [FIX v3] Chỉ hoàn khi is_stock_reserved = 1; dùng i.warehouse_id (không hardcode)
+-- [FIX v4-2] Chặn hoàn kho khi cancel sau delivered:
+--   delivered → cancelled là trạng thái KHÔNG hợp lệ (state machine đã chặn ở sp_UpdateOrderStatus)
+--   Nhưng phòng thủ thêm tại trigger: chỉ hoàn kho khi trạng thái trước (d.status)
+--   KHÔNG phải 'delivered' — tránh trường hợp hack bypass state machine
 CREATE TRIGGER trg_RestoreStockOnCancel
 ON Orders AFTER UPDATE
 AS
@@ -1512,6 +1539,18 @@ BEGIN
         WHERE i.status = 'cancelled' AND d.status <> 'cancelled'
     ) RETURN;
 
+    -- [FIX v4-2] Chặn hoàn kho nếu đơn trước đó đã 'delivered'
+    --   → tránh trường hợp ai đó bypass state machine, force-update status
+    IF EXISTS (
+        SELECT 1 FROM inserted i JOIN deleted d ON i.order_id = d.order_id
+        WHERE i.status = 'cancelled' AND d.status = 'delivered'
+    )
+    BEGIN
+        ROLLBACK TRANSACTION;
+        RAISERROR(N'[TRIGGER] Không thể huỷ đơn hàng đã giao (delivered).', 16, 1);
+        RETURN;
+    END
+
     -- [FIX v3] AND i.is_stock_reserved = 1 — không hoàn kho nếu chưa từng reserve
     UPDATE inv
     SET inv.quantity   += oi.quantity,
@@ -1522,7 +1561,8 @@ BEGIN
     JOIN deleted    d  ON i.order_id       = d.order_id
     WHERE i.status             = 'cancelled'
       AND d.status             <> 'cancelled'
-      AND i.is_stock_reserved  = 1          -- [FIX v3]
+      AND d.status             <> 'delivered'   -- [FIX v4-2] double-guard
+      AND i.is_stock_reserved  = 1              -- [FIX v3]
       AND inv.warehouse_id     = i.warehouse_id; -- [FIX v3]
 
     -- Reset cờ reserve dù hoàn hay không
@@ -1631,12 +1671,20 @@ BEGIN
 END
 GO
 
--- TRIGGER 12: [FIX v3] Ràng buộc tổng tiền thanh toán không vượt tổng đơn
+-- TRIGGER 12: [FIX v3+v4] Ràng buộc tổng tiền thanh toán không vượt tổng đơn
+-- [FIX v4-5] Chỉ check khi inserted.status = 'completed'
+--   Nếu insert/update một payment với status = 'pending'/'failed' → không check
+--   Tránh false-positive khi tạo payment chờ xác nhận
 CREATE TRIGGER trg_ValidatePaymentAmount
 ON Payments AFTER INSERT, UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    -- [FIX v4-5] Thoát sớm nếu không có dòng nào trong inserted có status = 'completed'
+    --   → payment pending/failed/refunded không kích hoạt check tổng tiền
+    IF NOT EXISTS (SELECT 1 FROM inserted WHERE status = 'completed') RETURN;
+
     -- [FIX v3] GROUP BY order_id — so sánh tổng 1 lần / order, chính xác & tối ưu
     IF EXISTS (
         SELECT 1
@@ -1647,7 +1695,7 @@ BEGIN
             FROM Payments p
             JOIN Orders   o ON p.order_id = o.order_id
             WHERE p.status    = 'completed'
-              AND p.order_id IN (SELECT order_id FROM inserted)
+              AND p.order_id IN (SELECT order_id FROM inserted WHERE status = 'completed')
             GROUP BY p.order_id, o.total_amount
         ) agg
         WHERE agg.total_paid > agg.total_amount
