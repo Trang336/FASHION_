@@ -7,7 +7,6 @@
 
 USE master;
 GO
-
 IF EXISTS (SELECT name FROM sys.databases WHERE name = N'ClothingStoreDB')
     DROP DATABASE ClothingStoreDB;
 GO
@@ -1094,7 +1093,8 @@ BEGIN
     END TRY
     BEGIN CATCH
         ROLLBACK TRANSACTION;
-        RAISERROR(ERROR_MESSAGE(), 16, 1);
+        DECLARE @errMsg NVARCHAR(2048) = ERROR_MESSAGE();  
+        RAISERROR(@errMsg, 16, 1);
     END CATCH
 END
 GO
