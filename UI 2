@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClothingStoreDB — Demo Hệ Thống Quản Lý</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f1117;--sidebar:#161b27;--card:#1c2333;--card2:#232b3e;
+  --accent:#14b8a6;--accent2:#f59e0b;--text:#e2e8f0;--muted:#8892a4;
+  --border:#2a3447;--success:#10b981;--warning:#f59e0b;--danger:#ef4444;
+  --info:#3b82f6;
+}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;display:flex;min-height:100vh}
+
+/* SIDEBAR */
+.sidebar{width:220px;background:var(--sidebar);border-right:1px solid var(--border);padding:0;display:flex;flex-direction:column;flex-shrink:0}
+.logo{padding:20px 18px 16px;border-bottom:1px solid var(--border)}
+.logo h1{font-size:17px;font-weight:700;color:var(--accent);letter-spacing:-.3px}
+.logo p{font-size:11px;color:var(--muted);margin-top:2px}
+.nav{padding:12px 0;flex:1}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 18px;cursor:pointer;color:var(--muted);font-size:13px;transition:all .15s;border-left:3px solid transparent}
+.nav-item:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.nav-item.active{color:var(--accent);background:rgba(20,184,166,.08);border-left-color:var(--accent)}
+.nav-item .icon{width:16px;text-align:center;font-size:15px}
+.sidebar-footer{padding:14px 18px;border-top:1px solid var(--border);font-size:11px;color:var(--muted)}
+
+/* MAIN */
+.main{flex:1;overflow-y:auto;padding:24px;display:none}
+.main.active{display:block}
+.page-title{font-size:20px;font-weight:600;margin-bottom:4px}
+.page-sub{font-size:12px;color:var(--muted);margin-bottom:20px}
+
+/* CARDS */
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px}
+.stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
+.stat-value{font-size:24px;font-weight:700;line-height:1}
+.stat-sub{font-size:11px;color:var(--muted);margin-top:4px}
+.stat-card.green .stat-value{color:var(--success)}
+.stat-card.teal .stat-value{color:var(--accent)}
+.stat-card.amber .stat-value{color:var(--accent2)}
+.stat-card.blue .stat-value{color:var(--info)}
+
+/* CHART ROW */
+.chart-row{display:grid;grid-template-columns:1.6fr 1fr;gap:14px;margin-bottom:20px}
+.chart-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px}
+.chart-title{font-size:13px;font-weight:600;margin-bottom:12px}
+.chart-wrap{position:relative;height:200px}
+
+/* TABLE */
+.table-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:20px}
+.table-header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border)}
+.table-header h3{font-size:13px;font-weight:600}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500}
+.badge.delivered{background:rgba(16,185,129,.15);color:#34d399}
+.badge.pending{background:rgba(245,158,11,.15);color:#fbbf24}
+.badge.shipped{background:rgba(59,130,246,.15);color:#60a5fa}
+.badge.confirmed{background:rgba(20,184,166,.15);color:#2dd4bf}
+.badge.cancelled{background:rgba(239,68,68,.15);color:#f87171}
+.badge.gold{background:rgba(245,158,11,.2);color:#f59e0b}
+.badge.silver{background:rgba(148,163,184,.2);color:#94a3b8}
+.badge.regular{background:rgba(100,116,139,.15);color:#64748b}
+.badge.admin{background:rgba(168,85,247,.2);color:#c084fc}
+.badge.manager{background:rgba(59,130,246,.2);color:#60a5fa}
+.badge.sales{background:rgba(16,185,129,.2);color:#34d399}
+.badge.warehouse{background:rgba(245,158,11,.2);color:#fbbf24}
+.badge.viewer{background:rgba(100,116,139,.2);color:#94a3b8}
+
+table{width:100%;border-collapse:collapse}
+th{padding:9px 14px;text-align:left;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--border);background:var(--card2)}
+td{padding:9px 14px;border-bottom:1px solid rgba(42,52,71,.5);font-size:13px;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,.02)}
+
+/* TABS */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px}
+.tab-btn{padding:8px 14px;font-size:12px;cursor:pointer;color:var(--muted);border:none;background:none;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all .15s}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* PROCEDURE / FUNCTION CARDS */
+.feature-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:16px}
+.feature-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px}
+.feature-card h4{font-size:12px;font-weight:600;color:var(--accent);margin-bottom:4px;font-family:monospace}
+.feature-card p{font-size:12px;color:var(--muted);line-height:1.5}
+
+/* SCHEMA */
+.schema-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.schema-table{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.schema-head{background:var(--card2);padding:8px 12px;font-size:12px;font-weight:600;color:var(--accent);border-bottom:1px solid var(--border)}
+.schema-col{padding:5px 12px;font-size:11px;color:var(--muted);border-bottom:1px solid rgba(42,52,71,.4);display:flex;justify-content:space-between}
+.schema-col:last-child{border-bottom:none}
+.col-type{color:var(--accent2);font-family:monospace;font-size:10px}
+.pk{color:#c084fc;font-size:9px;background:rgba(168,85,247,.15);padding:1px 4px;border-radius:3px}
+.fk{color:#60a5fa;font-size:9px;background:rgba(59,130,246,.15);padding:1px 4px;border-radius:3px}
+
+/* INVENTORY bars */
+.inv-bar{height:6px;border-radius:3px;background:var(--border);overflow:hidden;margin-top:4px}
+.inv-fill{height:100%;border-radius:3px;background:var(--accent);transition:width .3s}
+.inv-fill.low{background:var(--danger)}
+.inv-fill.mid{background:var(--warning)}
+
+/* Search */
+.search-box{padding:6px 12px;border:1px solid var(--border);border-radius:6px;background:var(--card2);color:var(--text);font-size:12px;width:200px;outline:none}
+.search-box:focus{border-color:var(--accent)}
+
+/* Filter badge */
+.filter-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.filter-btn{padding:4px 10px;border-radius:20px;font-size:11px;cursor:pointer;border:1px solid var(--border);background:var(--card2);color:var(--muted);transition:all .15s}
+.filter-btn.active{background:rgba(20,184,166,.15);border-color:var(--accent);color:var(--accent)}
+
+/* SQL block */
+.sql-block{background:#0d1117;border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-family:monospace;font-size:12px;color:#c9d1d9;overflow-x:auto;margin-bottom:10px;line-height:1.6}
+.sql-kw{color:#ff7b72}
+.sql-fn{color:#d2a8ff}
+.sql-str{color:#a5d6ff}
+.sql-cm{color:#8b949e}
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<div class="sidebar">
+  <div class="logo">
+    <h1>🧥 ClothingStoreDB</h1>
+    <p>Đồ án CSDL Nâng Cao</p>
+  </div>
+  <nav class="nav">
+    <div class="nav-item active" onclick="showPage('dashboard')"><span class="icon">📊</span> Tổng quan</div>
+    <div class="nav-item" onclick="showPage('schema')"><span class="icon">🗂</span> Schema</div>
+    <div class="nav-item" onclick="showPage('products')"><span class="icon">👕</span> Sản phẩm</div>
+    <div class="nav-item" onclick="showPage('orders')"><span class="icon">🛒</span> Đơn hàng</div>
+    <div class="nav-item" onclick="showPage('customers')"><span class="icon">👥</span> Khách hàng</div>
+    <div class="nav-item" onclick="showPage('inventory')"><span class="icon">📦</span> Tồn kho</div>
+    <div class="nav-item" onclick="showPage('reports')"><span class="icon">📈</span> Báo cáo</div>
+    <div class="nav-item" onclick="showPage('rbac')"><span class="icon">🔐</span> Phân quyền</div>
+    <div class="nav-item" onclick="showPage('features')"><span class="icon">⚙️</span> Views / Procs</div>
+    <div class="nav-item" onclick="showPage('security')"><span class="icon">🛡</span> Bảo mật DB</div>
+  </nav>
+  <div class="sidebar-footer">SQL Server 2022 · ClothingStoreDB<br>FINAL v2 · 17 tables</div>
+</div>
+
+<!-- ======= PAGE: DASHBOARD ======= -->
+<div id="page-dashboard" class="main active">
+  <div class="page-title">Tổng quan hệ thống</div>
+  <div class="page-sub">ClothingStoreDB — Hệ thống quản lý bán quần áo · Q1–Q3 2024</div>
+
+  <div class="stat-grid">
+    <div class="stat-card teal">
+      <div class="stat-label">Tổng đơn hàng</div>
+      <div class="stat-value">30</div>
+      <div class="stat-sub">18 giao thành công</div>
+    </div>
+    <div class="stat-card green">
+      <div class="stat-label">Doanh thu (đã giao)</div>
+      <div class="stat-value">13.52M</div>
+      <div class="stat-sub">₫13,520,000</div>
+    </div>
+    <div class="stat-card amber">
+      <div class="stat-label">Khách hàng</div>
+      <div class="stat-value">25</div>
+      <div class="stat-sub">6 VIP Gold/Silver</div>
+    </div>
+    <div class="stat-card blue">
+      <div class="stat-label">Sản phẩm active</div>
+      <div class="stat-value">117</div>
+      <div class="stat-sub">8 thương hiệu · 15 danh mục</div>
+    </div>
+  </div>
+
+  <div class="chart-row">
+    <div class="chart-card">
+      <div class="chart-title">Doanh thu theo tháng (vw_MonthlyRevenue)</div>
+      <div class="chart-wrap"><canvas id="revenueChart" role="img" aria-label="Doanh thu theo tháng năm 2024">Biểu đồ doanh thu tháng.</canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Trạng thái đơn hàng</div>
+      <div class="chart-wrap"><canvas id="statusChart" role="img" aria-label="Phân bổ trạng thái đơn hàng">Biểu đồ trạng thái.</canvas></div>
+    </div>
+  </div>
+
+  <div class="chart-row">
+    <div class="chart-card">
+      <div class="chart-title">Top sản phẩm bán chạy (vw_TopSellingProducts)</div>
+      <div class="chart-wrap" style="height:220px"><canvas id="topProductChart" role="img" aria-label="Top sản phẩm bán chạy">Biểu đồ sản phẩm.</canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Phương thức thanh toán</div>
+      <div class="chart-wrap"><canvas id="paymentChart" role="img" aria-label="Phương thức thanh toán">Biểu đồ thanh toán.</canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- ======= PAGE: SCHEMA ======= -->
+<div id="page-schema" class="main">
+  <div class="page-title">Cấu trúc Database</div>
+  <div class="page-sub">ClothingStoreDB · 17 bảng · SQL Server 2022 · Collate Vietnamese_CI_AS</div>
+  <div class="schema-grid">
+    <div class="schema-table">
+      <div class="schema-head">📋 Orders</div>
+      <div class="schema-col"><span><span class="pk">PK</span> order_id</span><span class="col-type">INT IDENTITY</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> customer_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> created_by</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span>status</span><span class="col-type">NVARCHAR(30)</span></div>
+      <div class="schema-col"><span>total_amount</span><span class="col-type">DECIMAL(14,2)</span></div>
+      <div class="schema-col"><span>is_stock_reserved</span><span class="col-type">BIT</span></div>
+    </div>
+    <div class="schema-table">
+      <div class="schema-head">👕 Products</div>
+      <div class="schema-col"><span><span class="pk">PK</span> product_id</span><span class="col-type">INT IDENTITY</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> category_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> brand_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span>product_name</span><span class="col-type">NVARCHAR(200)</span></div>
+      <div class="schema-col"><span>base_price</span><span class="col-type">DECIMAL(12,2)</span></div>
+      <div class="schema-col"><span>is_active</span><span class="col-type">BIT DEFAULT 1</span></div>
+    </div>
+    <div class="schema-table">
+      <div class="schema-head">🔀 ProductVariants</div>
+      <div class="schema-col"><span><span class="pk">PK</span> variant_id</span><span class="col-type">INT IDENTITY</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> product_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span>size</span><span class="col-type">NVARCHAR(10)</span></div>
+      <div class="schema-col"><span>color</span><span class="col-type">NVARCHAR(50)</span></div>
+      <div class="schema-col"><span>sku</span><span class="col-type">VARCHAR(60) UNIQUE</span></div>
+      <div class="schema-col"><span>extra_price</span><span class="col-type">DECIMAL(12,2)</span></div>
+    </div>
+    <div class="schema-table">
+      <div class="schema-head">📦 Inventory</div>
+      <div class="schema-col"><span><span class="pk">PK</span> inventory_id</span><span class="col-type">INT IDENTITY</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> variant_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> warehouse_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span>quantity</span><span class="col-type">INT ≥ 0</span></div>
+      <div class="schema-col"><span>min_quantity</span><span class="col-type">INT DEFAULT 5</span></div>
+      <div class="schema-col"><span>updated_at</span><span class="col-type">DATETIME</span></div>
+    </div>
+    <div class="schema-table">
+      <div class="schema-head">👤 Customers</div>
+      <div class="schema-col"><span><span class="pk">PK</span> customer_id</span><span class="col-type">INT IDENTITY</span></div>
+      <div class="schema-col"><span>full_name</span><span class="col-type">NVARCHAR(100)</span></div>
+      <div class="schema-col"><span>email</span><span class="col-type">NVARCHAR(100)</span></div>
+      <div class="schema-col"><span>gender</span><span class="col-type">CHK: Nam/Nữ/Khác</span></div>
+      <div class="schema-col"><span>loyalty_points</span><span class="col-type">INT DEFAULT 0</span></div>
+      <div class="schema-col"><span>birthday</span><span class="col-type">DATE</span></div>
+    </div>
+    <div class="schema-table">
+      <div class="schema-head">💳 Payments</div>
+      <div class="schema-col"><span><span class="pk">PK</span> payment_id</span><span class="col-type">INT IDENTITY</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> order_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span>amount</span><span class="col-type">DECIMAL(14,2)</span></div>
+      <div class="schema-col"><span>method</span><span class="col-type">NVARCHAR(50)</span></div>
+      <div class="schema-col"><span>status</span><span class="col-type">pending/completed…</span></div>
+      <div class="schema-col"><span>transaction_ref</span><span class="col-type">VARCHAR(100)</span></div>
+    </div>
+    <div class="schema-table">
+      <div class="schema-head">🔑 Roles + Permissions</div>
+      <div class="schema-col"><span>role_id / role_name</span><span class="col-type">UNIQUE</span></div>
+      <div class="schema-col"><span>permission_id</span><span class="col-type">INT IDENTITY</span></div>
+      <div class="schema-col"><span>module</span><span class="col-type">NVARCHAR(50)</span></div>
+      <div class="schema-col"><span>action</span><span class="col-type">NVARCHAR(50)</span></div>
+      <div class="schema-col"><span>RolePermissions</span><span class="col-type">bridge table</span></div>
+    </div>
+    <div class="schema-table">
+      <div class="schema-head">🚚 StockReceipts</div>
+      <div class="schema-col"><span><span class="pk">PK</span> receipt_id</span><span class="col-type">INT IDENTITY</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> supplier_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> warehouse_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span><span class="fk">FK</span> created_by</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span>total_amount</span><span class="col-type">DECIMAL(14,2)</span></div>
+      <div class="schema-col"><span>receipt_date</span><span class="col-type">DATETIME</span></div>
+    </div>
+    <div class="schema-table">
+      <div class="schema-head">📝 AuditLog</div>
+      <div class="schema-col"><span><span class="pk">PK</span> log_id</span><span class="col-type">INT IDENTITY</span></div>
+      <div class="schema-col"><span>table_name</span><span class="col-type">NVARCHAR(50)</span></div>
+      <div class="schema-col"><span>action</span><span class="col-type">INSERT/UPDATE…</span></div>
+      <div class="schema-col"><span>record_id</span><span class="col-type">INT</span></div>
+      <div class="schema-col"><span>changed_by</span><span class="col-type">SYSTEM_USER</span></div>
+      <div class="schema-col"><span>changed_at</span><span class="col-type">DATETIME</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ======= PAGE: PRODUCTS ======= -->
+<div id="page-products" class="main">
+  <div class="page-title">Danh mục sản phẩm</div>
+  <div class="page-sub">117 sản phẩm · 8 thương hiệu · 15 danh mục · ProductVariants (size × màu)</div>
+  <div class="filter-row">
+    <span style="font-size:12px;color:var(--muted)">Danh mục:</span>
+    <span class="filter-btn active" onclick="filterProduct(this,'all')">Tất cả</span>
+    <span class="filter-btn" onclick="filterProduct(this,'ao-thun')">Áo thun</span>
+    <span class="filter-btn" onclick="filterProduct(this,'ao-so-mi')">Áo sơ mi</span>
+    <span class="filter-btn" onclick="filterProduct(this,'ao-khoac')">Áo khoác</span>
+    <span class="filter-btn" onclick="filterProduct(this,'quan-jean')">Quần jean</span>
+    <span class="filter-btn" onclick="filterProduct(this,'vay-dam')">Váy & Đầm</span>
+  </div>
+  <div class="table-card">
+    <div class="table-header"><h3>Sản phẩm mẫu (20 / 117)</h3><input class="search-box" placeholder="Tìm sản phẩm..." oninput="searchProduct(this.value)"></div>
+    <table id="productTable">
+      <thead><tr><th>ID</th><th>Tên sản phẩm</th><th>Danh mục</th><th>Thương hiệu</th><th>Giá cơ bản</th><th>Biến thể</th><th>Trạng thái</th></tr></thead>
+      <tbody id="productBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ======= PAGE: ORDERS ======= -->
+<div id="page-orders" class="main">
+  <div class="page-title">Quản lý đơn hàng</div>
+  <div class="page-sub">30 đơn · sp_CreateOrder · sp_UpdateOrderStatus · Trigger hoàn kho khi huỷ</div>
+  <div class="filter-row">
+    <span style="font-size:12px;color:var(--muted)">Lọc trạng thái:</span>
+    <span class="filter-btn active" onclick="filterOrder(this,'all')">Tất cả (30)</span>
+    <span class="filter-btn" onclick="filterOrder(this,'delivered')">Giao xong (18)</span>
+    <span class="filter-btn" onclick="filterOrder(this,'pending')">Chờ xử lý (4)</span>
+    <span class="filter-btn" onclick="filterOrder(this,'shipped')">Đang giao (4)</span>
+    <span class="filter-btn" onclick="filterOrder(this,'confirmed')">Xác nhận (3)</span>
+    <span class="filter-btn" onclick="filterOrder(this,'cancelled')">Huỷ (1)</span>
+  </div>
+  <div class="table-card">
+    <div class="table-header"><h3 id="orderCount">Tất cả đơn hàng</h3></div>
+    <table>
+      <thead><tr><th>Mã ĐH</th><th>Khách hàng</th><th>Nhân viên</th><th>Ngày đặt</th><th>Trạng thái</th><th>Giảm giá</th><th>Tổng tiền</th></tr></thead>
+      <tbody id="orderBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ======= PAGE: CUSTOMERS ======= -->
+<div id="page-customers" class="main">
+  <div class="page-title">Khách hàng (vw_TopCustomers)</div>
+  <div class="page-sub">25 khách · Phân hạng VIP Gold / Silver / Regular · loyalty_points</div>
+  <div class="stat-grid" style="grid-template-columns:repeat(3,1fr)">
+    <div class="stat-card amber"><div class="stat-label">VIP Gold</div><div class="stat-value">2</div><div class="stat-sub">Chi tiêu ≥ 5,000,000₫</div></div>
+    <div class="stat-card blue"><div class="stat-label">VIP Silver</div><div class="stat-value">4</div><div class="stat-sub">Chi tiêu ≥ 2,000,000₫</div></div>
+    <div class="stat-card"><div class="stat-label">Regular</div><div class="stat-value">19</div><div class="stat-sub">Chi tiêu < 2,000,000₫</div></div>
+  </div>
+  <div class="table-card">
+    <div class="table-header"><h3>Danh sách khách hàng</h3></div>
+    <table>
+      <thead><tr><th>ID</th><th>Họ tên</th><th>Email</th><th>Giới tính</th><th>Điểm tích lũy</th><th>Địa chỉ</th><th>Hạng</th></tr></thead>
+      <tbody id="customerBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ======= PAGE: INVENTORY ======= -->
+<div id="page-inventory" class="main">
+  <div class="page-title">Tồn kho (vw_InventoryByWarehouse)</div>
+  <div class="page-sub">3 kho · variant × warehouse · MERGE khi nhập · Trigger cảnh báo tồn thấp</div>
+  <div class="stat-grid">
+    <div class="stat-card teal"><div class="stat-label">Kho Hà Nội</div><div class="stat-value">~850</div><div class="stat-sub">Tổng biến thể</div></div>
+    <div class="stat-card green"><div class="stat-label">Kho Hồ Chí Minh</div><div class="stat-value">~920</div><div class="stat-sub">Tổng biến thể</div></div>
+    <div class="stat-card blue"><div class="stat-label">Kho Đà Nẵng</div><div class="stat-value">~780</div><div class="stat-sub">Tổng biến thể</div></div>
+    <div class="stat-card amber"><div class="stat-label">Cảnh báo tồn thấp</div><div class="stat-value">~43</div><div class="stat-sub">quantity ≤ min_quantity</div></div>
+  </div>
+  <div class="table-card">
+    <div class="table-header"><h3>Mẫu tồn kho theo biến thể (vw_LowStockAlert)</h3></div>
+    <table>
+      <thead><tr><th>SKU</th><th>Sản phẩm</th><th>Size</th><th>Màu</th><th>Kho</th><th>Tồn kho</th><th>Tối thiểu</th><th>Mức độ</th></tr></thead>
+      <tbody id="inventoryBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ======= PAGE: REPORTS ======= -->
+<div id="page-reports" class="main">
+  <div class="page-title">Báo cáo & Phân tích</div>
+  <div class="page-sub">vw_DailyRevenue · vw_MonthlyRevenue · vw_TopSellingProducts · vw_SupplierStockSummary</div>
+  <div class="chart-row" style="grid-template-columns:1fr 1fr">
+    <div class="chart-card">
+      <div class="chart-title">Doanh thu theo quý 2024</div>
+      <div class="chart-wrap"><canvas id="quarterChart" role="img" aria-label="Doanh thu theo quý">Biểu đồ quý.</canvas></div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Doanh thu theo danh mục</div>
+      <div class="chart-wrap"><canvas id="catChart" role="img" aria-label="Doanh thu theo danh mục">Biểu đồ danh mục.</canvas></div>
+    </div>
+  </div>
+  <div class="table-card">
+    <div class="table-header"><h3>Tổng nhập kho theo nhà cung cấp (vw_SupplierStockSummary)</h3></div>
+    <table>
+      <thead><tr><th>Nhà cung cấp</th><th>Người liên hệ</th><th>Số phiếu nhập</th><th>Tổng SL nhận</th><th>Tổng tiền</th><th>Nhập lần cuối</th></tr></thead>
+      <tbody>
+        <tr><td>Dệt may Phong Phú</td><td>Nguyễn Thành Long</td><td>2</td><td>130</td><td style="color:var(--success)">19,500,000₫</td><td>2024-08-05</td></tr>
+        <tr><td>Xưởng may Hoàng Gia</td><td>Trần Minh Hoàng</td><td>2</td><td>240</td><td style="color:var(--success)">30,400,000₫</td><td>2024-06-01</td></tr>
+        <tr><td>Vải Việt Tiến</td><td>Lê Thị Thu</td><td>2</td><td>190</td><td style="color:var(--success)">26,200,000₫</td><td>2024-07-10</td></tr>
+        <tr><td>May mặc An Phát</td><td>Phạm Văn An</td><td>1</td><td>190</td><td style="color:var(--success)">30,000,000₫</td><td>2024-05-12</td></tr>
+        <tr><td>Xưởng Minh Tâm</td><td>Võ Minh Tâm</td><td>1</td><td>90</td><td style="color:var(--success)">12,000,000₫</td><td>2024-04-05</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ======= PAGE: RBAC ======= -->
+<div id="page-rbac" class="main">
+  <div class="page-title">Phân quyền RBAC (vw_UserPermissions)</div>
+  <div class="page-sub">5 Roles · 20 Permissions · RolePermissions bridge · Users kiểm tra email format</div>
+  <div class="table-card" style="margin-bottom:16px">
+    <div class="table-header"><h3>Nhân viên hệ thống</h3></div>
+    <table>
+      <thead><tr><th>ID</th><th>Họ tên</th><th>Email</th><th>Vai trò</th><th>Trạng thái</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Nguyễn Văn Admin</td><td>admin@store.vn</td><td><span class="badge admin">Admin</span></td><td><span class="badge delivered">Active</span></td></tr>
+        <tr><td>2</td><td>Trần Thị Manager</td><td>manager@store.vn</td><td><span class="badge manager">Manager</span></td><td><span class="badge delivered">Active</span></td></tr>
+        <tr><td>3</td><td>Lê Văn Sales 1</td><td>sales1@store.vn</td><td><span class="badge sales">Sales Staff</span></td><td><span class="badge delivered">Active</span></td></tr>
+        <tr><td>4</td><td>Phạm Thị Sales 2</td><td>sales2@store.vn</td><td><span class="badge sales">Sales Staff</span></td><td><span class="badge delivered">Active</span></td></tr>
+        <tr><td>5</td><td>Ngô Thị Sales 3</td><td>sales3@store.vn</td><td><span class="badge sales">Sales Staff</span></td><td><span class="badge delivered">Active</span></td></tr>
+        <tr><td>6</td><td>Hoàng Văn Warehouse</td><td>warehouse@store.vn</td><td><span class="badge warehouse">Warehouse Staff</span></td><td><span class="badge delivered">Active</span></td></tr>
+        <tr><td>7</td><td>Vũ Minh Viewer</td><td>viewer@store.vn</td><td><span class="badge viewer">Viewer</span></td><td><span class="badge delivered">Active</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="table-card">
+    <div class="table-header"><h3>Ma trận quyền theo vai trò</h3></div>
+    <table>
+      <thead><tr><th>Module</th><th>Action</th><th>Admin</th><th>Manager</th><th>Sales</th><th>Warehouse</th><th>Viewer</th></tr></thead>
+      <tbody>
+        <tr><td>products</td><td>read / create / update / delete</td><td>✅ ✅ ✅ ✅</td><td>✅ — ✅ —</td><td>✅ — — —</td><td>— — — —</td><td>✅ — — —</td></tr>
+        <tr><td>inventory</td><td>read / create / update / delete</td><td>✅ ✅ ✅ ✅</td><td>✅ — ✅ —</td><td>✅ — — —</td><td>✅ ✅ ✅ —</td><td>✅ — — —</td></tr>
+        <tr><td>orders</td><td>read / create / update / delete</td><td>✅ ✅ ✅ ✅</td><td>✅ ✅ ✅ —</td><td>✅ ✅ ✅ —</td><td>— — — —</td><td>✅ — — —</td></tr>
+        <tr><td>users</td><td>read / create / update / delete</td><td>✅ ✅ ✅ ✅</td><td>— — — —</td><td>— — — —</td><td>— — — —</td><td>✅ — — —</td></tr>
+        <tr><td>reports</td><td>read</td><td>✅</td><td>✅</td><td>—</td><td>—</td><td>✅</td></tr>
+        <tr><td>suppliers</td><td>read / create / update</td><td>✅ ✅ ✅</td><td>✅ — ✅</td><td>— — —</td><td>✅ ✅ ✅</td><td>✅ — —</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ======= PAGE: FEATURES ======= -->
+<div id="page-features" class="main">
+  <div class="page-title">Views · Stored Procedures · Functions · Triggers</div>
+  <div class="page-sub">10 Views · 10 Procedures · 10 Functions · 12 Triggers · 10 Indexes</div>
+
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showTab(this,'tab-views')">10 Views</button>
+    <button class="tab-btn" onclick="showTab(this,'tab-procs')">10 Procedures</button>
+    <button class="tab-btn" onclick="showTab(this,'tab-triggers')">12 Triggers</button>
+    <button class="tab-btn" onclick="showTab(this,'tab-indexes')">10 Indexes</button>
+    <button class="tab-btn" onclick="showTab(this,'tab-sql')">SQL mẫu</button>
+  </div>
+
+  <div id="tab-views">
+    <div class="feature-grid">
+      <div class="feature-card"><h4>vw_InventoryByWarehouse</h4><p>Tồn kho theo từng biến thể và kho. Hiển thị trạng thái "⚠ Sắp hết" / "✔ Còn hàng".</p></div>
+      <div class="feature-card"><h4>vw_LowStockAlert</h4><p>Cảnh báo tồn kho thấp — lọc tất cả variant có quantity ≤ min_quantity và tính mức thiếu hụt.</p></div>
+      <div class="feature-card"><h4>vw_TotalStockByProduct</h4><p>Gộp tồn kho toàn bộ kho theo từng sản phẩm, đếm số biến thể, giá min/max.</p></div>
+      <div class="feature-card"><h4>vw_DailyRevenue</h4><p>Doanh thu theo ngày — tổng đơn, doanh thu gộp, giảm giá, doanh thu thuần (chỉ đơn "delivered").</p></div>
+      <div class="feature-card"><h4>vw_MonthlyRevenue</h4><p>Tổng hợp theo tháng: số đơn, doanh thu, giá trị đơn trung bình, số khách riêng biệt.</p></div>
+      <div class="feature-card"><h4>vw_TopSellingProducts</h4><p>Xếp hạng sản phẩm bán chạy: tổng số lượng, doanh thu, số đơn hàng có sản phẩm đó.</p></div>
+      <div class="feature-card"><h4>vw_OrderDetail</h4><p>Chi tiết đơn hàng đầy đủ: khách, nhân viên, từng item, sku, size, màu, đơn giá, thành tiền.</p></div>
+      <div class="feature-card"><h4>vw_TopCustomers</h4><p>Phân hạng VIP Gold/Silver/Regular theo tổng chi tiêu. Hiển thị loyalty_points và lần mua cuối.</p></div>
+      <div class="feature-card"><h4>vw_UserPermissions</h4><p>Join Users ↔ Roles ↔ RolePermissions ↔ Permissions — hiển thị toàn bộ quyền của mỗi user.</p></div>
+      <div class="feature-card"><h4>vw_SupplierStockSummary</h4><p>Thống kê nhà cung cấp: số phiếu nhập, tổng SL nhận, tổng tiền, lần nhập cuối.</p></div>
+    </div>
+  </div>
+
+  <div id="tab-procs" style="display:none">
+    <div class="feature-grid">
+      <div class="feature-card"><h4>sp_CreateOrder</h4><p>Tạo đơn + parse XML items + kiểm tra tồn kho + RESERVE stock + ghi AuditLog. Full transaction với TRY/CATCH.</p></div>
+      <div class="feature-card"><h4>sp_AddOrderItem</h4><p>Thêm item vào đơn, lấy giá từ base_price + extra_price, tự cập nhật lại total_amount.</p></div>
+      <div class="feature-card"><h4>sp_UpdateOrderStatus</h4><p>Validate trạng thái hợp lệ trước khi UPDATE. Trigger sẽ tự kích hoạt để trừ kho hoặc hoàn kho.</p></div>
+      <div class="feature-card"><h4>sp_ReceiveStock</h4><p>Nhập kho với full transaction. Trigger trg_UpdateStockOnReceipt dùng MERGE để cập nhật Inventory.</p></div>
+      <div class="feature-card"><h4>sp_SearchProducts</h4><p>Tìm kiếm linh hoạt: keyword LIKE, lọc category_id, brand_id, khoảng giá min/max.</p></div>
+      <div class="feature-card"><h4>sp_GetOrdersByDateRange</h4><p>Lọc đơn hàng theo khoảng ngày + tuỳ chọn lọc thêm theo status.</p></div>
+      <div class="feature-card"><h4>sp_CancelOrder</h4><p>Huỷ đơn + hoàn kho tự động. Kiểm tra trạng thái hiện tại trước khi cho phép huỷ.</p></div>
+      <div class="feature-card"><h4>sp_GetCustomerHistory</h4><p>Lịch sử mua hàng của một khách: đơn hàng, sản phẩm, tổng chi tiêu, điểm tích luỹ.</p></div>
+      <div class="feature-card"><h4>sp_TransferStock</h4><p>Chuyển hàng giữa 2 kho. Kiểm tra tồn kho nguồn, trừ/cộng đồng thời trong transaction.</p></div>
+      <div class="feature-card"><h4>sp_GenerateMonthlyReport</h4><p>Tổng hợp báo cáo tháng: doanh thu, sản phẩm bán chạy, khách hàng mới, tỉ lệ huỷ đơn.</p></div>
+    </div>
+  </div>
+
+  <div id="tab-triggers" style="display:none">
+    <div class="feature-grid">
+      <div class="feature-card"><h4>trg_UpdateStockOnReceipt</h4><p>AFTER INSERT StockReceiptItems — dùng MERGE để cộng hoặc tạo mới bản ghi Inventory.</p></div>
+      <div class="feature-card"><h4>trg_DeductStockOnDelivered</h4><p>AFTER UPDATE Orders — khi status = 'delivered' và is_stock_reserved = 0 mới trừ kho (tránh double-deduct).</p></div>
+      <div class="feature-card"><h4>trg_RestoreStockOnCancel</h4><p>AFTER UPDATE Orders — khi status = 'cancelled' và is_stock_reserved = 1, hoàn lại tồn kho.</p></div>
+      <div class="feature-card"><h4>trg_AuditOrders</h4><p>AFTER INSERT/UPDATE/DELETE Orders — ghi vào AuditLog với thông tin thay đổi và SYSTEM_USER.</p></div>
+      <div class="feature-card"><h4>trg_AuditProducts</h4><p>AFTER INSERT/UPDATE/DELETE Products — ghi log thay đổi thông tin sản phẩm.</p></div>
+      <div class="feature-card"><h4>trg_LoyaltyOnDelivered</h4><p>AFTER UPDATE Orders — cộng loyalty_points cho khách khi đơn chuyển sang "delivered".</p></div>
+      <div class="feature-card"><h4>trg_CheckStockBeforeOrder (INSTEAD OF)</h4><p>Kiểm tra tồn kho trước khi INSERT OrderItems, báo lỗi rõ ràng nếu không đủ.</p></div>
+      <div class="feature-card"><h4>trg_PreventDeleteDelivered</h4><p>Ngăn xoá đơn hàng có status = 'delivered' — toàn vẹn dữ liệu lịch sử.</p></div>
+      <div class="feature-card"><h4>trg_UpdateOrderTotal (INSTEAD OF UPDATE)</h4><p>Đủ tất cả cột khi cập nhật Inventory — sửa lỗi thiếu cột trong trigger gốc.</p></div>
+      <div class="feature-card"><h4>trg_InventoryUpdatedAt</h4><p>AFTER UPDATE Inventory — tự động set updated_at = GETDATE() khi quantity thay đổi.</p></div>
+      <div class="feature-card"><h4>trg_ValidateOrderStatus</h4><p>Kiểm tra luồng chuyển trạng thái hợp lệ: không được đi ngược (vd: shipped → pending).</p></div>
+      <div class="feature-card"><h4>trg_AuditUserLogin</h4><p>Ghi log mỗi lần user được cập nhật — theo dõi hoạt động tài khoản.</p></div>
+    </div>
+  </div>
+
+  <div id="tab-indexes" style="display:none">
+    <div class="feature-grid">
+      <div class="feature-card"><h4>idx_Orders_Status</h4><p>IX NONCLUSTERED trên Orders(status) — tăng tốc lọc đơn theo trạng thái.</p></div>
+      <div class="feature-card"><h4>idx_Orders_CustomerDate</h4><p>IX NONCLUSTERED Orders(customer_id, order_date DESC) — tối ưu lịch sử mua hàng.</p></div>
+      <div class="feature-card"><h4>idx_Inventory_Variant</h4><p>IX NONCLUSTERED Inventory(variant_id, warehouse_id) — join nhanh khi kiểm kho.</p></div>
+      <div class="feature-card"><h4>idx_OrderItems_Order</h4><p>IX NONCLUSTERED OrderItems(order_id) — include unit_price, quantity — covering index.</p></div>
+      <div class="feature-card"><h4>idx_Products_Category</h4><p>IX NONCLUSTERED Products(category_id, is_active) — lọc sản phẩm theo danh mục nhanh.</p></div>
+      <div class="feature-card"><h4>idx_Products_Brand</h4><p>IX NONCLUSTERED Products(brand_id) — tăng tốc tìm kiếm theo thương hiệu.</p></div>
+      <div class="feature-card"><h4>idx_Variants_Product</h4><p>IX NONCLUSTERED ProductVariants(product_id) — tối ưu load biến thể của sản phẩm.</p></div>
+      <div class="feature-card"><h4>idx_Payments_Order</h4><p>IX NONCLUSTERED Payments(order_id, status) — join nhanh khi tra cứu thanh toán.</p></div>
+      <div class="feature-card"><h4>idx_Customers_Email</h4><p>IX UNIQUE Customers(email) — đảm bảo duy nhất và tìm kiếm nhanh theo email.</p></div>
+      <div class="feature-card"><h4>idx_AuditLog_Table</h4><p>IX NONCLUSTERED AuditLog(table_name, changed_at DESC) — tra cứu log nhanh theo bảng.</p></div>
+    </div>
+  </div>
+
+  <div id="tab-sql" style="display:none">
+    <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Ví dụ gọi stored procedure và query trực tiếp:</p>
+    <div class="sql-block"><span class="sql-cm">-- Tạo đơn hàng qua sp_CreateOrder (XML items)</span><br>
+<span class="sql-kw">DECLARE</span> @newId <span class="sql-kw">INT</span>;<br>
+<span class="sql-kw">EXEC</span> <span class="sql-fn">sp_CreateOrder</span><br>
+&nbsp;&nbsp;@customer_id = <span class="sql-str">1</span>,<br>
+&nbsp;&nbsp;@created_by = <span class="sql-str">3</span>,<br>
+&nbsp;&nbsp;@shipping_address = <span class="sql-str">N'Q1, TP.HCM'</span>,<br>
+&nbsp;&nbsp;@discount_amount = <span class="sql-str">50000</span>,<br>
+&nbsp;&nbsp;@items_xml = <span class="sql-str">'&lt;items&gt;&lt;i vid="1" qty="2"/&gt;&lt;i vid="9" qty="1"/&gt;&lt;/items&gt;'</span>,<br>
+&nbsp;&nbsp;@warehouse_id = <span class="sql-str">2</span>,<br>
+&nbsp;&nbsp;@new_order_id = @newId <span class="sql-kw">OUTPUT</span>;<br>
+<span class="sql-kw">SELECT</span> @newId <span class="sql-kw">AS</span> NewOrderID;</div>
+
+    <div class="sql-block"><span class="sql-cm">-- Xem báo cáo tháng qua View</span><br>
+<span class="sql-kw">SELECT</span> yr, mo,<br>
+&nbsp;&nbsp;total_orders, revenue,<br>
+&nbsp;&nbsp;<span class="sql-fn">FORMAT</span>(avg_order_value, <span class="sql-str">'N0'</span>) <span class="sql-kw">AS</span> avg_value,<br>
+&nbsp;&nbsp;unique_customers<br>
+<span class="sql-kw">FROM</span> vw_MonthlyRevenue<br>
+<span class="sql-kw">ORDER BY</span> yr, mo;</div>
+
+    <div class="sql-block"><span class="sql-cm">-- Cảnh báo tồn kho sắp hết</span><br>
+<span class="sql-kw">SELECT TOP</span> <span class="sql-str">10</span><br>
+&nbsp;&nbsp;product_name, sku, size, color,<br>
+&nbsp;&nbsp;warehouse_name, quantity, min_quantity,<br>
+&nbsp;&nbsp;shortage<br>
+<span class="sql-kw">FROM</span> vw_LowStockAlert<br>
+<span class="sql-kw">ORDER BY</span> shortage <span class="sql-kw">DESC</span>;</div>
+
+    <div class="sql-block"><span class="sql-cm">-- Phân quyền RBAC của user</span><br>
+<span class="sql-kw">SELECT DISTINCT</span> full_name, role_name,<br>
+&nbsp;&nbsp;<span class="sql-fn">STRING_AGG</span>(module + <span class="sql-str">':'</span> + action, <span class="sql-str">', '</span>) <span class="sql-kw">AS</span> permissions<br>
+<span class="sql-kw">FROM</span> vw_UserPermissions<br>
+<span class="sql-kw">GROUP BY</span> full_name, role_name<br>
+<span class="sql-kw">ORDER BY</span> role_name;</div>
+  </div>
+</div>
+
+<!-- ======= PAGE: SECURITY ======= -->
+<div id="page-security" class="main">
+  <div class="page-title">Bảo mật mức Database — Demo Phân quyền</div>
+  <div class="page-sub">SQL Server Login · GRANT / DENY · EXECUTE AS USER · Kiểm chứng thực tế</div>
+
+  <div class="stat-grid">
+    <div class="stat-card teal"><div class="stat-label">Roles trong hệ thống</div><div class="stat-value">5</div><div class="stat-sub">Admin / Manager / Sales / Warehouse / Viewer</div></div>
+    <div class="stat-card green"><div class="stat-label">Permissions</div><div class="stat-value">20</div><div class="stat-sub">6 modules × read/create/update/delete</div></div>
+    <div class="stat-card amber"><div class="stat-label">User demo</div><div class="stat-value">NV_Kho</div><div class="stat-sub">Role: Warehouse Staff</div></div>
+    <div class="stat-card blue"><div class="stat-label">Cơ chế bảo vệ</div><div class="stat-value">DENY</div><div class="stat-sub">DENY > GRANT — không thể bị override</div></div>
+  </div>
+
+  <div class="chart-row" style="grid-template-columns:1fr 1fr;margin-bottom:16px">
+    <div class="chart-card">
+      <div class="chart-title">Script tạo User NV_Kho</div>
+      <div class="sql-block" style="margin:0"><span class="sql-cm">-- 1. Tạo Login ở cấp SQL Server</span><br>
+<span class="sql-kw">CREATE LOGIN</span> NV_Kho<br>
+&nbsp;&nbsp;<span class="sql-kw">WITH</span> PASSWORD = <span class="sql-str">'Warehouse@2024!'</span>,<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;CHECK_POLICY = <span class="sql-kw">ON</span>;<br><br>
+<span class="sql-cm">-- 2. Tạo User trong ClothingStoreDB</span><br>
+<span class="sql-kw">CREATE USER</span> NV_Kho <span class="sql-kw">FOR LOGIN</span> NV_Kho;<br><br>
+<span class="sql-cm">-- 3. Gán quyền (Warehouse Staff)</span><br>
+<span class="sql-kw">GRANT</span> <span class="sql-fn">SELECT</span>, <span class="sql-fn">UPDATE</span> <span class="sql-kw">ON</span> Inventory <span class="sql-kw">TO</span> NV_Kho;<br>
+<span class="sql-kw">GRANT</span> <span class="sql-fn">SELECT</span> <span class="sql-kw">ON</span> Orders <span class="sql-kw">TO</span> NV_Kho;<br>
+<span class="sql-kw">GRANT</span> <span class="sql-fn">EXECUTE</span> <span class="sql-kw">ON</span> sp_ReceiveStock <span class="sql-kw">TO</span> NV_Kho;<br><br>
+<span class="sql-cm">-- 4. Cấm tường minh (DENY > GRANT)</span><br>
+<span class="sql-kw">DENY</span> <span class="sql-fn">DELETE</span> <span class="sql-kw">ON</span> Orders <span class="sql-kw">TO</span> NV_Kho;<br>
+<span class="sql-kw">DENY</span> <span class="sql-fn">SELECT</span> <span class="sql-kw">ON</span> Users <span class="sql-kw">TO</span> NV_Kho;</div>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">Kết quả kiểm tra phân quyền</div>
+      <div id="testResults" style="display:flex;flex-direction:column;gap:8px;margin-top:4px">
+        <div class="test-row" data-test="0">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--card2);border-radius:8px;cursor:pointer" onclick="runTest(0)">
+            <span class="test-icon">▶</span>
+            <span style="flex:1;font-size:12px"><code style="color:var(--accent2)">SELECT</code> FROM Orders</span>
+            <span style="font-size:11px;color:var(--muted)">Kỳ vọng: thành công</span>
+            <span class="test-badge" style="font-size:11px;color:var(--muted)">Chưa chạy</span>
+          </div>
+        </div>
+        <div class="test-row" data-test="1">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--card2);border-radius:8px;cursor:pointer" onclick="runTest(1)">
+            <span class="test-icon">▶</span>
+            <span style="flex:1;font-size:12px"><code style="color:var(--danger)">DELETE</code> FROM Orders</span>
+            <span style="font-size:11px;color:var(--muted)">Kỳ vọng: thất bại (DENY)</span>
+            <span class="test-badge" style="font-size:11px;color:var(--muted)">Chưa chạy</span>
+          </div>
+        </div>
+        <div class="test-row" data-test="2">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--card2);border-radius:8px;cursor:pointer" onclick="runTest(2)">
+            <span class="test-icon">▶</span>
+            <span style="flex:1;font-size:12px"><code style="color:var(--danger)">SELECT</code> FROM Users</span>
+            <span style="font-size:11px;color:var(--muted)">Kỳ vọng: thất bại (DENY)</span>
+            <span class="test-badge" style="font-size:11px;color:var(--muted)">Chưa chạy</span>
+          </div>
+        </div>
+        <div class="test-row" data-test="3">
+          <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--card2);border-radius:8px;cursor:pointer" onclick="runTest(3)">
+            <span class="test-icon">▶</span>
+            <span style="flex:1;font-size:12px"><code style="color:var(--accent)">INSERT</code> StockReceipts</span>
+            <span style="font-size:11px;color:var(--muted)">Kỳ vọng: thành công</span>
+            <span class="test-badge" style="font-size:11px;color:var(--muted)">Chưa chạy</span>
+          </div>
+        </div>
+        <button onclick="runAllTests()" style="margin-top:4px;padding:8px;background:rgba(20,184,166,.15);border:1px solid var(--accent);border-radius:6px;color:var(--accent);cursor:pointer;font-size:12px">▶▶ Chạy tất cả tests</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="table-card">
+    <div class="table-header"><h3>Ma trận quyền NV_Kho (sys.database_permissions)</h3></div>
+    <table>
+      <thead><tr><th>Bảng / Object</th><th>SELECT</th><th>INSERT</th><th>UPDATE</th><th>DELETE</th><th>EXECUTE</th></tr></thead>
+      <tbody>
+        <tr><td>Inventory</td><td style="color:var(--success)">GRANT ✔</td><td style="color:var(--success)">GRANT ✔</td><td style="color:var(--success)">GRANT ✔</td><td style="color:var(--danger)">DENY ✘</td><td>—</td></tr>
+        <tr><td>Orders</td><td style="color:var(--success)">GRANT ✔</td><td>—</td><td>—</td><td style="color:var(--danger)">DENY ✘</td><td>—</td></tr>
+        <tr><td>StockReceipts</td><td style="color:var(--success)">GRANT ✔</td><td style="color:var(--success)">GRANT ✔</td><td style="color:var(--success)">GRANT ✔</td><td style="color:var(--danger)">DENY ✘</td><td>—</td></tr>
+        <tr><td>Suppliers</td><td style="color:var(--success)">GRANT ✔</td><td style="color:var(--success)">GRANT ✔</td><td style="color:var(--success)">GRANT ✔</td><td style="color:var(--danger)">DENY ✘</td><td>—</td></tr>
+        <tr><td>Products / Variants</td><td style="color:var(--success)">GRANT ✔</td><td>—</td><td>—</td><td style="color:var(--danger)">DENY ✘</td><td>—</td></tr>
+        <tr><td style="color:var(--danger)">Users</td><td style="color:var(--danger)">DENY ✘</td><td style="color:var(--danger)">DENY ✘</td><td style="color:var(--danger)">DENY ✘</td><td style="color:var(--danger)">DENY ✘</td><td>—</td></tr>
+        <tr><td style="color:var(--danger)">Payments</td><td style="color:var(--danger)">DENY ✘</td><td style="color:var(--danger)">DENY ✘</td><td style="color:var(--danger)">DENY ✘</td><td style="color:var(--danger)">DENY ✘</td><td>—</td></tr>
+        <tr><td>sp_ReceiveStock</td><td>—</td><td>—</td><td>—</td><td>—</td><td style="color:var(--success)">GRANT ✔</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="chart-card" style="margin-bottom:0">
+    <div class="chart-title">Cải tiến đã áp dụng từ góp ý thầy</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px">
+      <div style="padding:10px 12px;background:var(--card2);border-radius:8px;border-left:3px solid var(--success)">
+        <div style="font-size:11px;font-weight:600;color:var(--success);margin-bottom:3px">✔ CHK_ExtraPrice</div>
+        <div style="font-size:11px;color:var(--muted)">CHECK (extra_price >= 0) đã có trong file gốc và được xác nhận lại trong patch</div>
+      </div>
+      <div style="padding:10px 12px;background:var(--card2);border-radius:8px;border-left:3px solid var(--success)">
+        <div style="font-size:11px;font-weight:600;color:var(--success);margin-bottom:3px">✔ Soft Delete trên Views</div>
+        <div style="font-size:11px;color:var(--muted)">vw_TopSellingProducts + vw_TotalStockByProduct bổ sung p.is_active = 1</div>
+      </div>
+      <div style="padding:10px 12px;background:var(--card2);border-radius:8px;border-left:3px solid var(--success)">
+        <div style="font-size:11px;font-weight:600;color:var(--success);margin-bottom:3px">✔ SET XACT_ABORT ON</div>
+        <div style="font-size:11px;color:var(--muted)">sp_CreateOrder auto-rollback khi bị ngắt giữa transaction — tránh sai tồn kho</div>
+      </div>
+      <div style="padding:10px 12px;background:var(--card2);border-radius:8px;border-left:3px solid var(--success)">
+        <div style="font-size:11px;font-weight:600;color:var(--success);margin-bottom:3px">✔ trg_DeductStockOnDelivered (viết lại)</div>
+        <div style="font-size:11px;color:var(--muted)">Kiểm tra is_stock_reserved = 0 trước khi trừ — tránh double-deduct tuyệt đối</div>
+      </div>
+      <div style="padding:10px 12px;background:var(--card2);border-radius:8px;border-left:3px solid var(--accent)">
+        <div style="font-size:11px;font-weight:600;color:var(--accent);margin-bottom:3px">✔ trg_UpdateReservedStockOnItemChange (MỚI)</div>
+        <div style="font-size:11px;color:var(--muted)">Tự động điều chỉnh reserved stock khi khách đổi SL đơn đang pending/confirmed</div>
+      </div>
+      <div style="padding:10px 12px;background:var(--card2);border-radius:8px;border-left:3px solid var(--accent)">
+        <div style="font-size:11px;font-weight:600;color:var(--accent);margin-bottom:3px">✔ vw_MonthlyRevenue (COALESCE + CTE)</div>
+        <div style="font-size:11px;color:var(--muted)">Tháng không có đơn hiện 0 thay vì NULL — Chart.js không bị lỗi hiển thị</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== DATA =====
+const products = [
+  {id:1,name:'Áo thun nam basic trắng',cat:'Áo thun',brand:'Local Brand VN',price:150000,variants:8,active:true},
+  {id:2,name:'Áo thun nam basic đen',cat:'Áo thun',brand:'Local Brand VN',price:150000,variants:8,active:true},
+  {id:3,name:'Áo thun SkyWear cổ tròn',cat:'Áo thun',brand:'SkyWear',price:180000,variants:8,active:true},
+  {id:5,name:'Áo thun UrbanFit oversize',cat:'Áo thun',brand:'UrbanFit',price:220000,variants:8,active:true},
+  {id:9,name:'Áo thun StreetStyle tie-dye',cat:'Áo thun',brand:'StreetStyle Co',price:230000,variants:8,active:true},
+  {id:15,name:'Áo thun NightOwl in hình',cat:'Áo thun',brand:'NightOwl Apparel',price:240000,variants:8,active:true},
+  {id:21,name:'Áo sơ mi nam trắng',cat:'Áo sơ mi',brand:'Local Brand VN',price:280000,variants:8,active:true},
+  {id:23,name:'Áo sơ mi linen',cat:'Áo sơ mi',brand:'UrbanFit',price:350000,variants:8,active:true},
+  {id:26,name:'Áo sơ mi denim',cat:'Áo sơ mi',brand:'StreetStyle Co',price:400000,variants:8,active:true},
+  {id:33,name:'Áo khoác bomber basic',cat:'Áo khoác',brand:'Local Brand VN',price:450000,variants:8,active:true},
+  {id:35,name:'Áo khoác denim',cat:'Áo khoác',brand:'UrbanFit',price:550000,variants:8,active:true},
+  {id:37,name:'Áo khoác blazer',cat:'Áo khoác',brand:'PureBasic',price:720000,variants:8,active:true},
+  {id:45,name:'Hoodie basic không mũ',cat:'Hoodie',brand:'Local Brand VN',price:320000,variants:8,active:true},
+  {id:49,name:'Hoodie fleece',cat:'Hoodie',brand:'EcoThreads',price:410000,variants:8,active:true},
+  {id:55,name:'Quần jean slim xanh nhạt',cat:'Quần jean',brand:'Local Brand VN',price:420000,variants:8,active:true},
+  {id:57,name:'Quần jean wide leg',cat:'Quần jean',brand:'UrbanFit',price:480000,variants:8,active:true},
+  {id:59,name:'Quần jean ripped',cat:'Quần jean',brand:'EcoThreads',price:500000,variants:8,active:true},
+  {id:88,name:'Váy ngắn hoa nhí',cat:'Váy ngắn',brand:'Local Brand VN',price:280000,variants:6,active:true},
+  {id:98,name:'Đầm dài hoa mùa hè',cat:'Đầm dài',brand:'Local Brand VN',price:380000,variants:6,active:true},
+  {id:108,name:'Mũ bucket basic',cat:'Mũ & Nón',brand:'Local Brand VN',price:120000,variants:3,active:true},
+];
+
+const orders = [
+  {id:1,customer:'Nguyễn Thị Hoa',staff:'Lê Văn Sales 1',date:'2024-01-15',status:'delivered',discount:0,total:520000},
+  {id:2,customer:'Trần Văn Bình',staff:'Lê Văn Sales 1',date:'2024-01-18',status:'delivered',discount:50000,total:830000},
+  {id:3,customer:'Lê Thị Mai',staff:'Phạm Thị Sales 2',date:'2024-02-02',status:'delivered',discount:0,total:450000},
+  {id:4,customer:'Phạm Quốc Hùng',staff:'Lê Văn Sales 1',date:'2024-02-10',status:'delivered',discount:0,total:1200000},
+  {id:5,customer:'Hoàng Thị Linh',staff:'Phạm Thị Sales 2',date:'2024-02-20',status:'delivered',discount:100000,total:680000},
+  {id:6,customer:'Vũ Minh Khôi',staff:'Lê Văn Sales 1',date:'2024-03-05',status:'delivered',discount:0,total:350000},
+  {id:7,customer:'Đặng Thị Yến',staff:'Ngô Thị Sales 3',date:'2024-03-12',status:'delivered',discount:0,total:590000},
+  {id:8,customer:'Bùi Văn Đức',staff:'Lê Văn Sales 1',date:'2024-03-22',status:'delivered',discount:0,total:960000},
+  {id:9,customer:'Ngô Thị Thanh',staff:'Phạm Thị Sales 2',date:'2024-04-01',status:'delivered',discount:50000,total:415000},
+  {id:10,customer:'Dương Văn Tùng',staff:'Ngô Thị Sales 3',date:'2024-04-08',status:'delivered',discount:0,total:780000},
+  {id:11,customer:'Phan Thị Ngọc',staff:'Lê Văn Sales 1',date:'2024-04-15',status:'cancelled',discount:0,total:280000},
+  {id:12,customer:'Tô Văn Hải',staff:'Phạm Thị Sales 2',date:'2024-05-02',status:'delivered',discount:0,total:1050000},
+  {id:13,customer:'Lý Thị Kim Anh',staff:'Ngô Thị Sales 3',date:'2024-05-10',status:'delivered',discount:0,total:460000},
+  {id:14,customer:'Trương Công Minh',staff:'Lê Văn Sales 1',date:'2024-05-18',status:'delivered',discount:150000,total:1350000},
+  {id:15,customer:'Cao Thị Thúy',staff:'Phạm Thị Sales 2',date:'2024-06-03',status:'delivered',discount:0,total:320000},
+  {id:16,customer:'Đinh Văn Phúc',staff:'Ngô Thị Sales 3',date:'2024-06-12',status:'shipped',discount:0,total:870000},
+  {id:17,customer:'Huỳnh Thị Diễm',staff:'Lê Văn Sales 1',date:'2024-06-20',status:'confirmed',discount:0,total:540000},
+  {id:18,customer:'Lưu Quang Trung',staff:'Phạm Thị Sales 2',date:'2024-07-01',status:'pending',discount:0,total:690000},
+  {id:19,customer:'Kiều Thị Bích',staff:'Ngô Thị Sales 3',date:'2024-07-08',status:'shipped',discount:50000,total:950000},
+  {id:20,customer:'Mai Văn Toàn',staff:'Lê Văn Sales 1',date:'2024-07-15',status:'pending',discount:0,total:420000},
+  {id:21,customer:'Nguyễn Thị Hoa',staff:'Phạm Thị Sales 2',date:'2024-07-20',status:'confirmed',discount:0,total:760000},
+  {id:22,customer:'Lê Thị Mai',staff:'Ngô Thị Sales 3',date:'2024-08-01',status:'pending',discount:0,total:380000},
+  {id:23,customer:'Hoàng Thị Linh',staff:'Lê Văn Sales 1',date:'2024-08-10',status:'shipped',discount:0,total:1100000},
+  {id:24,customer:'Trần Văn Bình',staff:'Phạm Thị Sales 2',date:'2024-08-18',status:'delivered',discount:0,total:650000},
+  {id:25,customer:'Vũ Minh Khôi',staff:'Ngô Thị Sales 3',date:'2024-08-22',status:'delivered',discount:0,total:420000},
+  {id:26,customer:'Bùi Văn Đức',staff:'Lê Văn Sales 1',date:'2024-09-01',status:'delivered',discount:100000,total:980000},
+  {id:27,customer:'Dương Văn Tùng',staff:'Phạm Thị Sales 2',date:'2024-09-10',status:'shipped',discount:0,total:730000},
+  {id:28,customer:'Tô Văn Hải',staff:'Ngô Thị Sales 3',date:'2024-09-15',status:'confirmed',discount:0,total:560000},
+  {id:29,customer:'Trương Công Minh',staff:'Lê Văn Sales 1',date:'2024-09-20',status:'pending',discount:0,total:1200000},
+  {id:30,customer:'Phạm Quốc Hùng',staff:'Phạm Thị Sales 2',date:'2024-09-25',status:'delivered',discount:50000,total:890000},
+];
+
+const customers = [
+  {id:1,name:'Nguyễn Thị Hoa',email:'hoa@gmail.com',gender:'Nữ',points:250,address:'Q1, TP.HCM',spent:1280000},
+  {id:2,name:'Trần Văn Bình',email:'binh@gmail.com',gender:'Nam',points:180,address:'Ba Đình, HN',spent:1480000},
+  {id:3,name:'Lê Thị Mai',email:'mai@gmail.com',gender:'Nữ',points:90,address:'Hải Châu, ĐN',spent:830000},
+  {id:4,name:'Phạm Quốc Hùng',email:'hung@gmail.com',gender:'Nam',points:320,address:'Q3, TP.HCM',spent:2090000},
+  {id:5,name:'Hoàng Thị Linh',email:'linh@gmail.com',gender:'Nữ',points:75,address:'Hoàn Kiếm, HN',spent:1780000},
+  {id:6,name:'Vũ Minh Khôi',email:'khoi@gmail.com',gender:'Nam',points:410,address:'Q7, TP.HCM',spent:770000},
+  {id:7,name:'Đặng Thị Yến',email:'yen@gmail.com',gender:'Nữ',points:60,address:'Thanh Khê, ĐN',spent:590000},
+  {id:8,name:'Bùi Văn Đức',email:'duc@gmail.com',gender:'Nam',points:200,address:'Cầu Giấy, HN',spent:1940000},
+  {id:9,name:'Ngô Thị Thanh',email:'thanh@gmail.com',gender:'Nữ',points:130,address:'Bình Thạnh, HCM',spent:415000},
+  {id:10,name:'Dương Văn Tùng',email:'tung@gmail.com',gender:'Nam',points:290,address:'Q5, TP.HCM',spent:1510000},
+  {id:12,name:'Tô Văn Hải',email:'hai@gmail.com',gender:'Nam',points:160,address:'Đống Đa, HN',spent:1610000},
+  {id:14,name:'Trương Công Minh',email:'minh@gmail.com',gender:'Nam',points:380,address:'Long Biên, HN',spent:2550000},
+];
+
+const inventory = [
+  {sku:'AT-001-S-TRG',name:'Áo thun nam basic trắng',size:'S',color:'Trắng',wh:'Kho Hà Nội',qty:45,min:5},
+  {sku:'AT-001-M-TRG',name:'Áo thun nam basic trắng',size:'M',color:'Trắng',wh:'Kho HCM',qty:3,min:5},
+  {sku:'AT-003-L-TRG',name:'Áo thun SkyWear cổ tròn',size:'L',color:'Trắng',wh:'Kho Đà Nẵng',qty:18,min:5},
+  {sku:'AK-033-M-DEN',name:'Áo khoác bomber basic',size:'M',color:'Đen',wh:'Kho Hà Nội',qty:2,min:5},
+  {sku:'QJ-055-30-XN',name:'Quần jean slim xanh nhạt',size:'30',color:'Xanh nhạt',wh:'Kho HCM',qty:55,min:5},
+  {sku:'QJ-057-32-DEN',name:'Quần jean wide leg',size:'32',color:'Đen',wh:'Kho Đà Nẵng',qty:4,min:5},
+  {sku:'SM-021-M-TRG',name:'Áo sơ mi nam trắng',size:'M',color:'Trắng',wh:'Kho HCM',qty:32,min:5},
+  {sku:'HD-045-L-XAM',name:'Hoodie basic không mũ',size:'L',color:'Xám',wh:'Kho Hà Nội',qty:1,min:5},
+];
+
+// ===== PAGE NAVIGATION =====
+function showPage(id) {
+  document.querySelectorAll('.main').forEach(e => e.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(e => e.classList.remove('active'));
+  document.getElementById('page-' + id).classList.add('active');
+  event.currentTarget.classList.add('active');
+  if (id === 'products') renderProducts(products);
+  if (id === 'orders') renderOrders(orders);
+  if (id === 'customers') renderCustomers();
+  if (id === 'inventory') renderInventory();
+  if (id === 'reports') initReportCharts();
+}
+
+// ===== TAB SWITCHING =====
+function showTab(btn, tabId) {
+  document.querySelectorAll('#page-features .tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  ['tab-views','tab-procs','tab-triggers','tab-indexes','tab-sql'].forEach(id => {
+    document.getElementById(id).style.display = (id === tabId) ? '' : 'none';
+  });
+}
+
+// ===== PRODUCTS =====
+let allProducts = [...products];
+function renderProducts(data) {
+  const body = document.getElementById('productBody');
+  body.innerHTML = data.map(p => `<tr>
+    <td style="color:var(--muted)">#${p.id}</td>
+    <td style="font-weight:500">${p.name}</td>
+    <td><span class="badge confirmed">${p.cat}</span></td>
+    <td style="color:var(--muted)">${p.brand}</td>
+    <td style="color:var(--accent2)">${p.price.toLocaleString('vi-VN')}₫</td>
+    <td style="color:var(--muted)">${p.variants} biến thể</td>
+    <td><span class="badge delivered">Active</span></td>
+  </tr>`).join('');
+}
+
+function filterProduct(btn, cat) {
+  document.querySelectorAll('#page-products .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const filtered = cat === 'all' ? products : products.filter(p => {
+    if (cat === 'ao-thun') return p.cat === 'Áo thun';
+    if (cat === 'ao-so-mi') return p.cat === 'Áo sơ mi';
+    if (cat === 'ao-khoac') return p.cat === 'Áo khoác';
+    if (cat === 'quan-jean') return p.cat === 'Quần jean';
+    if (cat === 'vay-dam') return p.cat === 'Váy ngắn' || p.cat === 'Đầm dài';
+    return true;
+  });
+  renderProducts(filtered);
+}
+
+function searchProduct(q) {
+  const filtered = products.filter(p => p.name.toLowerCase().includes(q.toLowerCase()) || p.brand.toLowerCase().includes(q.toLowerCase()));
+  renderProducts(filtered);
+}
+
+// ===== ORDERS =====
+let orderFilter = 'all';
+function renderOrders(data) {
+  const statusMap = {delivered:'Giao xong',pending:'Chờ xử lý',shipped:'Đang giao',confirmed:'Xác nhận',cancelled:'Đã huỷ'};
+  document.getElementById('orderBody').innerHTML = data.map(o => `<tr>
+    <td style="color:var(--muted)">#${o.id}</td>
+    <td>${o.customer}</td>
+    <td style="color:var(--muted);font-size:12px">${o.staff}</td>
+    <td style="color:var(--muted)">${o.date}</td>
+    <td><span class="badge ${o.status}">${statusMap[o.status]}</span></td>
+    <td style="color:var(--danger)">${o.discount > 0 ? '-'+o.discount.toLocaleString('vi-VN')+'₫' : '—'}</td>
+    <td style="color:var(--accent2);font-weight:500">${o.total.toLocaleString('vi-VN')}₫</td>
+  </tr>`).join('');
+}
+
+function filterOrder(btn, status) {
+  document.querySelectorAll('#page-orders .filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const filtered = status === 'all' ? orders : orders.filter(o => o.status === status);
+  renderOrders(filtered);
+}
+
+// ===== CUSTOMERS =====
+function renderCustomers() {
+  const tierMap = s => s >= 5000000 ? ['VIP Gold','gold'] : s >= 2000000 ? ['VIP Silver','silver'] : ['Regular','regular'];
+  document.getElementById('customerBody').innerHTML = customers.map(c => {
+    const [tier, cls] = tierMap(c.spent);
+    return `<tr>
+      <td style="color:var(--muted)">#${c.id}</td>
+      <td style="font-weight:500">${c.name}</td>
+      <td style="color:var(--muted);font-size:12px">${c.email}</td>
+      <td>${c.gender}</td>
+      <td style="color:var(--accent2)">${c.points} pts</td>
+      <td style="color:var(--muted);font-size:12px">${c.address}</td>
+      <td><span class="badge ${cls}">${tier}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+// ===== INVENTORY =====
+function renderInventory() {
+  document.getElementById('inventoryBody').innerHTML = inventory.map(i => {
+    const pct = Math.min(100, Math.round(i.qty / (i.min * 4) * 100));
+    const cls = i.qty <= i.min ? 'low' : i.qty <= i.min * 3 ? 'mid' : '';
+    const status = i.qty <= i.min ? `<span class="badge cancelled">⚠ Sắp hết</span>` : `<span class="badge delivered">✔ Còn hàng</span>`;
+    return `<tr>
+      <td style="font-family:monospace;font-size:11px;color:var(--accent2)">${i.sku}</td>
+      <td>${i.name}</td><td>${i.size}</td><td>${i.color}</td><td>${i.wh}</td>
+      <td><div style="font-weight:500;color:${i.qty<=i.min?'var(--danger)':'var(--text)'}">${i.qty}</div>
+        <div class="inv-bar"><div class="inv-fill ${cls}" style="width:${pct}%"></div></div></td>
+      <td style="color:var(--muted)">${i.min}</td>
+      <td>${status}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ===== CHARTS =====
+window.addEventListener('load', () => {
+  // Monthly revenue
+  new Chart(document.getElementById('revenueChart'), {
+    type:'bar',
+    data:{
+      labels:['T1','T2','T3','T4','T5','T6','T7','T8','T9'],
+      datasets:[{
+        label:'Doanh thu (₫)',
+        data:[1350000,2330000,1900000,1195000,2860000,320000,0,1070000,1870000],
+        backgroundColor:'rgba(20,184,166,.7)',borderColor:'#14b8a6',borderWidth:1,borderRadius:4
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:v=>'₫'+v.raw.toLocaleString('vi-VN')}}},
+      scales:{x:{ticks:{color:'#8892a4',font:{size:11}},grid:{color:'rgba(255,255,255,.05)'}},
+              y:{ticks:{color:'#8892a4',font:{size:11},callback:v=>(v/1000000).toFixed(1)+'M'},grid:{color:'rgba(255,255,255,.05)'}}}
+    }
+  });
+
+  // Order status pie
+  new Chart(document.getElementById('statusChart'), {
+    type:'doughnut',
+    data:{
+      labels:['Giao xong','Chờ xử lý','Đang giao','Xác nhận','Đã huỷ'],
+      datasets:[{data:[18,4,4,3,1],backgroundColor:['#10b981','#f59e0b','#3b82f6','#14b8a6','#ef4444'],borderWidth:0}]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,cutout:'65%',
+      plugins:{legend:{position:'right',labels:{color:'#8892a4',font:{size:11},padding:8}}}
+    }
+  });
+
+  // Top products
+  new Chart(document.getElementById('topProductChart'), {
+    type:'bar',
+    data:{
+      labels:['Áo khoác\nbasic','Quần jean\nslim','Áo thun\nSkyWear','Quần jean\nwide leg','Sơ mi\nnữ lụa'],
+      datasets:[{
+        label:'SL bán',data:[12,10,8,7,6],
+        backgroundColor:['rgba(245,158,11,.7)','rgba(20,184,166,.7)','rgba(59,130,246,.7)','rgba(168,85,247,.7)','rgba(16,185,129,.7)'],
+        borderRadius:4,borderWidth:0
+      }]
+    },
+    options:{
+      indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false}},
+      scales:{x:{ticks:{color:'#8892a4',font:{size:11}},grid:{color:'rgba(255,255,255,.05)'}},
+              y:{ticks:{color:'#8892a4',font:{size:11}},grid:{display:false}}}
+    }
+  });
+
+  // Payment methods
+  new Chart(document.getElementById('paymentChart'), {
+    type:'pie',
+    data:{
+      labels:['Tiền mặt','Chuyển khoản','Momo','VNPay','Thẻ'],
+      datasets:[{data:[5,5,4,3,3],backgroundColor:['#f59e0b','#14b8a6','#3b82f6','#ef4444','#a855f7'],borderWidth:0}]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{position:'right',labels:{color:'#8892a4',font:{size:11},padding:8}}}
+    }
+  });
+});
+
+let reportChartsInit = false;
+function initReportCharts() {
+  if (reportChartsInit) return;
+  reportChartsInit = true;
+  new Chart(document.getElementById('quarterChart'), {
+    type:'bar',
+    data:{
+      labels:['Q1 (T1-T3)','Q2 (T4-T6)','Q3 (T7-T9)'],
+      datasets:[{
+        label:'Doanh thu',data:[5580000,4375000,3570000],
+        backgroundColor:['rgba(20,184,166,.7)','rgba(59,130,246,.7)','rgba(245,158,11,.7)'],
+        borderRadius:5,borderWidth:0
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:v=>'₫'+v.raw.toLocaleString('vi-VN')}}},
+      scales:{x:{ticks:{color:'#8892a4'},grid:{color:'rgba(255,255,255,.05)'}},
+              y:{ticks:{color:'#8892a4',callback:v=>(v/1000000).toFixed(1)+'M'},grid:{color:'rgba(255,255,255,.05)'}}}
+    }
+  });
+  new Chart(document.getElementById('catChart'), {
+    type:'doughnut',
+    data:{
+      labels:['Áo khoác','Quần jean','Áo sơ mi','Áo thun','Hoodie','Váy/Đầm','Khác'],
+      datasets:[{
+        data:[3800000,2900000,2100000,1800000,1400000,900000,620000],
+        backgroundColor:['#14b8a6','#3b82f6','#f59e0b','#10b981','#a855f7','#ef4444','#64748b'],
+        borderWidth:0
+      }]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,cutout:'50%',
+      plugins:{legend:{position:'right',labels:{color:'#8892a4',font:{size:11},padding:6}}}
+    }
+  });
+}
+</script>
+</body>
+</html>
